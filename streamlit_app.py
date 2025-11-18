@@ -36,22 +36,46 @@ st.markdown("""
 
 # Configuración de activos
 ASSETS = {
-    'sp500': {'label': 'S&P 500', 'symbol': '^GSPC', 'color': '#3b82f6'},
-    'nasdaq': {'label': 'NASDAQ', 'symbol': '^IXIC', 'color': '#8b5cf6'},
-    'dow': {'label': 'Dow Jones', 'symbol': '^DJI', 'color': '#10b981'},
-    'russell': {'label': 'Russell 2000', 'symbol': '^RUT', 'color': '#06b6d4'},
-    'dxy': {'label': 'DXY (Dólar)', 'symbol': 'DX-Y.NYB', 'color': '#f59e0b'},
-    'gold': {'label': 'Oro', 'symbol': 'GC=F', 'color': '#fbbf24'},
-    'silver': {'label': 'Plata', 'symbol': 'SI=F', 'color': '#d1d5db'},
-    'oil': {'label': 'Petróleo WTI', 'symbol': 'CL=F', 'color': '#000000'},
-    'natgas': {'label': 'Gas Natural', 'symbol': 'NG=F', 'color': '#059669'},
-    'us10y': {'label': 'Treasury 10Y', 'symbol': '^TNX', 'color': '#ef4444'},
-    'us2y': {'label': 'Treasury 2Y', 'symbol': '^IRX', 'color': '#dc2626'},
-    'vix': {'label': 'VIX (Volatilidad)', 'symbol': '^VIX', 'color': '#ec4899'},
-    'btc': {'label': 'Bitcoin', 'symbol': 'BTC-USD', 'color': '#f7931a'},
-    'eth': {'label': 'Ethereum', 'symbol': 'ETH-USD', 'color': '#627eea'},
-    'eur': {'label': 'EUR/USD', 'symbol': 'EURUSD=X', 'color': '#3b82f6'},
-    'jpy': {'label': 'USD/JPY', 'symbol': 'JPY=X', 'color': '#ef4444'},
+    # Índices de Acciones (Risk On)
+    'sp500': {'label': 'S&P 500', 'symbol': '^GSPC', 'color': '#3b82f6', 'risk': 'Risk On'},
+    'nasdaq': {'label': 'NASDAQ', 'symbol': '^IXIC', 'color': '#8b5cf6', 'risk': 'Risk On'},
+    'dow': {'label': 'Dow Jones', 'symbol': '^DJI', 'color': '#10b981', 'risk': 'Risk On'},
+    'russell': {'label': 'Russell 2000', 'symbol': '^RUT', 'color': '#06b6d4', 'risk': 'Risk On'},
+    'emerging': {'label': 'MSCI Emerging Markets', 'symbol': 'EEM', 'color': '#ec4899', 'risk': 'Risk On'},
+    
+    # Divisas (Risk On/Off)
+    'dxy': {'label': 'DXY (Dólar Index)', 'symbol': 'DX-Y.NYB', 'color': '#f59e0b', 'risk': 'Risk Off'},
+    'usdjpy': {'label': 'USD/JPY', 'symbol': 'JPY=X', 'color': '#ef4444', 'risk': 'Risk Off'},
+    'usdchf': {'label': 'USD/CHF', 'symbol': 'CHF=X', 'color': '#dc2626', 'risk': 'Risk Off'},
+    'audusd': {'label': 'AUD/USD', 'symbol': 'AUDUSD=X', 'color': '#10b981', 'risk': 'Risk On'},
+    'nzdusd': {'label': 'NZD/USD', 'symbol': 'NZDUSD=X', 'color': '#059669', 'risk': 'Risk On'},
+    'eurusd': {'label': 'EUR/USD', 'symbol': 'EURUSD=X', 'color': '#3b82f6', 'risk': 'Neutral'},
+    
+    # Metales Preciosos (Risk Off)
+    'gold': {'label': 'Oro', 'symbol': 'GC=F', 'color': '#fbbf24', 'risk': 'Risk Off'},
+    'silver': {'label': 'Plata', 'symbol': 'SI=F', 'color': '#d1d5db', 'risk': 'Risk On'},
+    
+    # Commodities (Risk On)
+    'oil': {'label': 'Petróleo WTI', 'symbol': 'CL=F', 'color': '#000000', 'risk': 'Risk On'},
+    'copper': {'label': 'Cobre', 'symbol': 'HG=F', 'color': '#c2410c', 'risk': 'Risk On'},
+    'natgas': {'label': 'Gas Natural', 'symbol': 'NG=F', 'color': '#059669', 'risk': 'Risk On'},
+    
+    # Bonos (Risk Off)
+    'us10y': {'label': 'Treasury 10Y', 'symbol': '^TNX', 'color': '#ef4444', 'risk': 'Risk Off'},
+    'us2y': {'label': 'Treasury 2Y', 'symbol': '^IRX', 'color': '#dc2626', 'risk': 'Risk Off'},
+    'tlt': {'label': 'TLT (20Y+ Treasury)', 'symbol': 'TLT', 'color': '#b91c1c', 'risk': 'Risk Off'},
+    
+    # Volatilidad (Risk Off)
+    'vix': {'label': 'VIX (Volatilidad)', 'symbol': '^VIX', 'color': '#ec4899', 'risk': 'Risk Off'},
+    
+    # Criptomonedas (Risk On)
+    'btc': {'label': 'Bitcoin', 'symbol': 'BTC-USD', 'color': '#f7931a', 'risk': 'Risk On'},
+    'eth': {'label': 'Ethereum', 'symbol': 'ETH-USD', 'color': '#627eea', 'risk': 'Risk On'},
+    
+    # ETFs Sectoriales
+    'qqq': {'label': 'QQQ (Nasdaq ETF)', 'symbol': 'QQQ', 'color': '#8b5cf6', 'risk': 'Risk On'},
+    'iwm': {'label': 'IWM (Russell 2000 ETF)', 'symbol': 'IWM', 'color': '#06b6d4', 'risk': 'Risk On'},
+    'eem': {'label': 'EEM (Emerging Markets)', 'symbol': 'EEM', 'color': '#ec4899', 'risk': 'Risk On'},
 }
 
 @st.cache_data(ttl=3600)
@@ -250,16 +274,27 @@ st.markdown("Analiza correlaciones dinámicas entre activos financieros en tiemp
 # Sidebar - Configuración
 st.sidebar.header("⚙️ Configuración")
 
+# Filtro por tipo de activo
+st.sidebar.subheader("Filtrar por Risk On/Off")
+risk_filter = st.sidebar.multiselect(
+    "Tipo de activo",
+    options=['Risk On', 'Risk Off', 'Neutral'],
+    default=['Risk On', 'Risk Off', 'Neutral']
+)
+
+# Filtrar activos según el filtro
+filtered_assets = {k: v for k, v in ASSETS.items() if v['risk'] in risk_filter}
+
 # Selección de activos
 st.sidebar.subheader("Activos a Analizar")
-available_assets = list(ASSETS.keys())
-default_assets = ['sp500', 'gold', 'btc', 'dxy', 'vix']
+available_assets = list(filtered_assets.keys())
+default_assets = ['sp500', 'usdjpy', 'gold', 'vix', 'audusd', 'btc']
 
 selected_assets = st.sidebar.multiselect(
     "Selecciona activos (mín. 2)",
     options=available_assets,
     default=[a for a in default_assets if a in available_assets],
-    format_func=lambda x: ASSETS[x]['label']
+    format_func=lambda x: f"{ASSETS[x]['label']} ({ASSETS[x]['risk']})"
 )
 
 if len(selected_assets) < 2:
@@ -450,5 +485,21 @@ st.sidebar.markdown("""
 - **< -0.5**: Fuerte correlación negativa
 - **≈ 0**: Sin correlación
 """)
+
+st.sidebar.markdown("### 🎯 Risk On/Off")
+st.sidebar.markdown("""
+**Risk On** (Apetito por riesgo):
+- Acciones suben
+- AUD, NZD fortalecen
+- Commodities suben
+- Cripto sube
+
+**Risk Off** (Aversión al riesgo):
+- USD, JPY, CHF fortalecen
+- Oro sube
+- VIX sube
+- Bonos suben
+""")
+
 st.sidebar.markdown("---")
 st.sidebar.info("💡 Los datos se actualizan automáticamente cada hora")
