@@ -2032,7 +2032,7 @@ def plot_correlation_regime_inverse(corr_series, threshold=-0.3):
 # =============================================================================
 
 st.title("📊 Correlation & Pairs Trading Analyzer Pro")
-st.markdown("🎯 Análisis de correlaciones positivas e **inversas** | Pairs Trading & Hedging | 120+ Activos Globales")
+st.markdown("🔍 **Búsqueda Automática** de Pares Correlacionados e Inversos | Pairs Trading & Hedging | 120+ Activos")
 
 # Sidebar - Configuración
 st.sidebar.header("⚙️ Configuración")
@@ -2083,43 +2083,79 @@ date_range = st.sidebar.selectbox(
 # Delay de descarga
 download_delay = st.sidebar.slider("Delay entre descargas (segundos)", 1, 30, 10, 1)
 
-# Botón de descarga
-if st.sidebar.button("🔄 Actualizar Datos", type="primary"):
+# Botón de descarga MANUAL
+if 'data_loaded' not in st.session_state:
+    st.session_state.data_loaded = False
+
+if st.sidebar.button("📥 Descargar Datos", type="primary", disabled=st.session_state.data_loaded):
+    with st.spinner(f"Descargando {len(selected_assets)} activos... (delay: {download_delay}s por activo)"):
+        asset_data = download_selected_assets(selected_assets, delay=download_delay)
+    
+    if not asset_data:
+        st.error("No se pudieron descargar los datos. Intenta nuevamente.")
+        st.stop()
+    
+    # Combinar datos
+    df_prices = merge_asset_data(asset_data)
+    
+    if df_prices.empty:
+        st.error("No hay suficientes datos comunes entre los activos seleccionados.")
+        st.stop()
+    
+    # Filtrar por rango de fechas
+    if date_range != 'Todo':
+        days_map = {'6 meses': 126, '1 año': 252, '2 años': 504, '3 años': 756, '5 años': 1260}
+        days = days_map[date_range]
+        df_prices = df_prices.iloc[-days:]
+    
+    # Guardar en session state
+    st.session_state.df_prices = df_prices
+    st.session_state.data_loaded = True
+    st.success(f"✅ Datos cargados: {len(df_prices)} días | {df_prices.index[0].date()} → {df_prices.index[-1].date()}")
+    st.rerun()
+
+if st.sidebar.button("🔄 Limpiar y Recargar"):
+    st.session_state.data_loaded = False
+    if 'df_prices' in st.session_state:
+        del st.session_state.df_prices
     st.cache_data.clear()
     st.rerun()
 
-# Descargar datos con delay configurable
-with st.spinner(f"Descargando {len(selected_assets)} activos... (delay: {download_delay}s por activo)"):
-    asset_data = download_selected_assets(selected_assets, delay=download_delay)
-
-if not asset_data:
-    st.error("No se pudieron descargar los datos. Intenta nuevamente.")
+# Verificar si hay datos cargados
+if not st.session_state.data_loaded:
+    st.info("""
+    ### 👋 Bienvenido al Correlation & Pairs Trading Analyzer!
+    
+    **Para comenzar:**
+    1. 📂 **Selecciona categorías** de activos en el sidebar (US Equity, FX, Crypto, etc.)
+    2. ✅ **Elige activos** que quieres analizar (mínimo 2, recomendado 10-20 para búsqueda)
+    3. ⚙️ **Configura parámetros** (delay, período, ventana de correlación)
+    4. 📥 **Presiona 'Descargar Datos'** en el sidebar
+    
+    **Pestañas disponibles:**
+    - 📈 Análisis detallado de cualquier par
+    - 🔥 Heatmap & clustering de correlaciones
+    - 📊 Estadísticas avanzadas
+    - 🎯 Pairs trading (cointegración, spread, z-score)
+    - 🔍 **Búsqueda automática de mejores pares** ⭐
+    - 🛡️ **Análisis de correlación inversa y hedging** ⭐
+    
+    💡 **Tip**: Usa categorías relacionadas (ej: US Equity + Sector ETFs) para mejores resultados
+    """)
     st.stop()
 
-# Combinar datos
-df_prices = merge_asset_data(asset_data)
-
-if df_prices.empty:
-    st.error("No hay suficientes datos comunes entre los activos seleccionados.")
-    st.stop()
-
-# Filtrar por rango de fechas
-if date_range != 'Todo':
-    days_map = {'6 meses': 126, '1 año': 252, '2 años': 504, '3 años': 756, '5 años': 1260}
-    days = days_map[date_range]
-    df_prices = df_prices.iloc[-days:]
-
-st.success(f"✅ Datos cargados: {len(df_prices)} días | {df_prices.index[0].date()} → {df_prices.index[-1].date()}")
+# Obtener datos del session state
+df_prices = st.session_state.df_prices
+st.success(f"✅ Datos listos: {len(df_prices)} días | {df_prices.index[0].date()} → {df_prices.index[-1].date()}")
 
 # =============================================================================
 # TABS PRINCIPALES
 # =============================================================================
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📈 Análisis de Pares Detallado", 
     "🔥 Heatmap & Clustering", 
     "📊 Estadísticas de Correlación",
-    "⚡ Métricas de Riesgo",
     "🎯 Pairs Trading Avanzado",
     "🔍 Búsqueda de Mejores Pares",
     "🛡️ Correlación Inversa & Hedging"
@@ -2461,72 +2497,6 @@ with tab3:
     st.plotly_chart(fig, use_container_width=True)
 
 with tab4:
-    st.subheader("⚡ Métricas de Riesgo y Performance")
-    
-    selected_asset = st.selectbox(
-        "Selecciona activo para análisis de riesgo",
-        options=selected_assets,
-        format_func=lambda x: ASSETS[x]['label'],
-        key='risk_asset'
-    )
-    
-    returns = calculate_returns(df_prices[selected_asset])
-    
-    benchmark_asset = st.selectbox(
-        "Benchmark (para Beta/Alpha)",
-        options=[a for a in selected_assets if a != selected_asset],
-        format_func=lambda x: ASSETS[x]['label'],
-        key='benchmark'
-    )
-    
-    returns_benchmark = calculate_returns(df_prices[benchmark_asset])
-    
-    # Métricas actuales
-    st.markdown("### 📊 Métricas Actuales (últimos 252 días)")
-    
-    current_vol = calculate_volatility(returns, window=252).iloc[-1]
-    current_sharpe = calculate_sharpe_ratio(returns, window=252).iloc[-1]
-    current_sortino = calculate_sortino_ratio(returns, window=252).iloc[-1]
-    current_treynor = calculate_treynor_ratio(returns, returns_benchmark, window=252).iloc[-1]
-    max_dd = calculate_max_drawdown(df_prices[selected_asset]).min() * 100
-    var_95 = calculate_var(returns, confidence=0.95, window=252).iloc[-1] * 100
-    cvar_95 = calculate_cvar(returns, confidence=0.95, window=252).iloc[-1] * 100
-    current_beta = calculate_beta(returns, returns_benchmark, window=252).iloc[-1]
-    current_alpha = calculate_alpha(returns, returns_benchmark, window=252).iloc[-1] * 100
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    with col1:
-        st.metric("Volatilidad Anual", f"{current_vol:.2%}")
-        st.metric("Sharpe Ratio", f"{current_sharpe:.3f}")
-    
-    with col2:
-        st.metric("Sortino Ratio", f"{current_sortino:.3f}")
-        st.metric("Treynor Ratio", f"{current_treynor:.3f}")
-    
-    with col3:
-        st.metric("Max Drawdown", f"{max_dd:.2f}%")
-        st.metric("VaR 95% (diario)", f"{var_95:.2f}%")
-    
-    with col4:
-        st.metric("Beta", f"{current_beta:.3f}")
-        st.metric("Alpha (anual)", f"{current_alpha:.2f}%")
-    
-    # Capture Ratios
-    st.markdown("### 📈 Capture Ratios")
-    upside = calculate_upside_capture(returns, returns_benchmark, window=252).iloc[-1]
-    downside = calculate_downside_capture(returns, returns_benchmark, window=252).iloc[-1]
-    
-    col1, col2 = st.columns(2)
-    col1.metric("Upside Capture", f"{upside:.1f}%")
-    col2.metric("Downside Capture", f"{downside:.1f}%")
-    
-    # Gráficos
-    st.plotly_chart(plot_risk_metrics(df_prices, selected_asset, returns), use_container_width=True)
-    st.plotly_chart(plot_performance_ratios(returns, returns_benchmark), use_container_width=True)
-    st.plotly_chart(plot_distribution_analysis(returns), use_container_width=True)
-
-with tab5:
     st.subheader("🎯 Pairs Trading Avanzado & Mean Reversion")
     
     col1, col2 = st.columns(2)
@@ -2639,7 +2609,7 @@ with tab5:
         st.metric("Distancia Euclidiana", f"{distance:.2f}")
         st.caption("Menor = Más similares")
 
-with tab6:
+with tab5:
     st.subheader("🔍 Búsqueda Automática de Mejores Pares")
     st.caption("Identifica automáticamente los mejores pares para trading usando múltiples criterios")
     
@@ -2897,7 +2867,7 @@ with tab6:
             
             st.dataframe(display_dist, use_container_width=True)
 
-with tab7:
+with tab6:
     st.subheader("🛡️ Análisis de Correlación Inversa & Hedging")
     st.caption("Identifica pares con correlación negativa fuerte para estrategias de cobertura y diversificación")
     
@@ -3177,56 +3147,63 @@ with tab7:
 
 # Footer
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📚 Guía de Métricas")
+st.sidebar.markdown("### 📚 Guía Rápida")
 st.sidebar.markdown("""
 **Correlaciones:**
-- > 0.7: Muy fuerte positiva
-- 0.5-0.7: Fuerte positiva 
-- 0.3-0.5: Moderada
-- -0.3 a 0.3: Débil/Neutral
-- -0.5 a -0.3: Moderada negativa
-- < -0.5: Fuerte INVERSA ⚡
-- < -0.7: Muy fuerte INVERSA 🛡️
+- **> 0.7**: Muy fuerte positiva ✅
+- **0.5-0.7**: Fuerte positiva
+- **< -0.5**: Fuerte INVERSA 🛡️
+- **< -0.7**: Muy fuerte INVERSA ⚡
 
-**Correlación Inversa:**
-- Ideal para hedging y diversificación
-- Reduce volatilidad del portfolio
-- Protección en caídas de mercado
+**Uso Principal:**
+- **Tab 5**: Búsqueda automática de mejores pares
+- **Tab 6**: Análisis de hedging (correlación inversa)
+- **Tab 1**: Análisis detallado de cualquier par
+- **Tab 4**: Pairs trading (cointegración, spread, z-score)
 
-**Hedge Ratio:**
-- Óptimo: minimiza volatilidad
-- > 1: más cobertura
-- < 1: cobertura parcial
+**Estrategias:**
+1. **Pairs Trading**: Correlación positiva (0.7+)
+   - Mean reversion
+   - Z-score > 2 o < -2
+   
+2. **Hedging**: Correlación inversa (<-0.5)
+   - Reduce volatilidad 30-60%
+   - Protección en caídas
+   
+3. **Diversificación**: Correlación baja (-0.3 a 0.3)
 
 **Cointegración:**
-- P-value < 0.05: Cointegrados
-- Score negativo alto: Fuerte cointegración
+- P-value < 0.05: ✅ Cointegrados
+- Spread estacionario
 
 **Hurst Exponent:**
-- < 0.5: Mean reverting (bueno)
-- = 0.5: Random walk
+- < 0.5: Mean reverting ✅
 - > 0.5: Trending
 
-**Performance Ratios:**
-- Sharpe > 2: Excelente
-- Sortino > 2: Muy bueno
-- Beta > 1: Más volátil que benchmark
-
-**Pairs Trading:**
-- Z-Score > 2 o < -2: Señal de trading
-- Half-life < 10 días: Rápido mean reversion
-- ADF p-value < 0.05: Spread estacionario
+**Z-Score Pairs Trading:**
+- > 2: Señal VENTA spread
+- < -2: Señal COMPRA spread
+- Entre -1 y 1: Sin señal
 """)
 
 st.sidebar.markdown("---")
-st.sidebar.info(f"💡 {len(ASSETS)} activos disponibles | Delay: {download_delay}s entre descargas")
+st.sidebar.markdown("### 💡 Tips")
+st.sidebar.info(f"""
+**{len(ASSETS)} activos disponibles**
+
+- Delay recomendado: 10s
+- Mín. activos: 2
+- Recomendado: 10-20 activos para búsqueda
+""")
+
 st.sidebar.markdown("---")
-st.sidebar.success("✨ Correlación Positiva & Inversa | Pairs Trading & Hedging")
+st.sidebar.success("✨ Enfoque: Búsqueda de Pares & Hedging")
 st.sidebar.markdown("""
-**Nuevas Funciones:**
-- 🛡️ Búsqueda de pares inversos
-- 📊 Análisis de efectividad de hedge
-- 🎯 Hedge ratio óptimo
-- 📈 Detección de regímenes inversos
-- 💰 Reducción de volatilidad/drawdown
+**Funciones Clave:**
+- 🔍 Búsqueda automática de pares
+- 🛡️ Análisis de hedging inverso
+- 📊 Lead-lag correlation
+- 🎯 Multi-window analysis
+- 📈 Régimen detection
+- 💰 Hedge ratio óptimo
 """)
