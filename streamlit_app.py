@@ -353,7 +353,7 @@ with tab1:
                                 ASSETS[asset2]['label'],
                                 ASSETS[asset1]['color'], 
                                 ASSETS[asset2]['color']),
-        use_container_width=True
+        width='stretch'
     )
     
     # Gráfico de precios
@@ -361,21 +361,38 @@ with tab1:
         plot_price_comparison(df_prices, asset1, asset2, 
                             ASSETS[asset1]['label'], 
                             ASSETS[asset2]['label']),
-        use_container_width=True
+        width='stretch'
     )
 
 with tab2:
     st.subheader("Matriz de Correlaciones entre Todos los Activos")
     st.plotly_chart(
         plot_correlation_heatmap(df_prices, selected_assets),
-        use_container_width=True
+        width='stretch'
     )
     
     # Mostrar tabla de correlaciones
     st.subheader("Tabla de Correlaciones")
     corr_matrix = df_prices[selected_assets].corr()
-    corr_matrix_styled = corr_matrix.style.background_gradient(cmap='RdBu', vmin=-1, vmax=1)
-    st.dataframe(corr_matrix_styled, use_container_width=True)
+    
+    # Formatear la tabla manualmente sin matplotlib
+    def color_correlation(val):
+        """Colorea las celdas según el valor de correlación"""
+        if val >= 0.7:
+            color = '#10b981'  # Verde fuerte
+        elif val >= 0.3:
+            color = '#84cc16'  # Verde claro
+        elif val > -0.3:
+            color = '#6b7280'  # Gris
+        elif val > -0.7:
+            color = '#f59e0b'  # Naranja
+        else:
+            color = '#ef4444'  # Rojo
+        return f'background-color: {color}; color: white'
+    
+    # Aplicar estilo sin usar background_gradient
+    styled_df = corr_matrix.style.applymap(color_correlation).format("{:.2f}")
+    st.dataframe(styled_df, width='stretch')
 
 with tab3:
     st.subheader("Estadísticas de Correlación")
@@ -413,7 +430,7 @@ with tab3:
         height=400
     )
     
-    st.plotly_chart(fig_hist, use_container_width=True)
+    st.plotly_chart(fig_hist, width='stretch')
     
     # Descargar datos
     st.subheader("📥 Descargar Datos")
