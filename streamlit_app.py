@@ -3,869 +3,581 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
+import plotly.express as px
 from plotly.subplots import make_subplots
 import time
 from datetime import datetime
-from scipy import stats
+import statsmodels.api as sm
 from statsmodels.tsa.stattools import adfuller, coint
 import warnings
+
 warnings.filterwarnings('ignore')
 
-# Configuración de la página
+# =============================================================================
+# CONFIGURACIÓN DE LA PÁGINA Y ESTILOS
+# =============================================================================
 st.set_page_config(
-    page_title="Pairs Trading Analyzer",
-    page_icon="📊",
+    page_title="Pairs Trading Master Class",
+    page_icon="🎓",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# CSS personalizado
+# CSS personalizado para mejorar la estética
 st.markdown("""
 <style>
-    .main {
-        background-color: #0e1117;
-    }
+    .main { background-color: #0e1117; }
     .stMetric {
         background-color: #1e2130;
         padding: 15px;
         border-radius: 10px;
+        border: 1px solid #2e3346;
     }
-    h1, h2, h3 {
-        color: #ffffff;
+    h1, h2, h3 { color: #ffffff; }
+    .stAlert { border-radius: 8px; }
+    /* Highlight para explicaciones */
+    .explanation-box {
+        background-color: #131720;
+        border-left: 5px solid #3b82f6;
+        padding: 15px;
+        margin-bottom: 15px;
+        border-radius: 5px;
     }
 </style>
 """, unsafe_allow_html=True)
 
-# Configuración de activos
+# =============================================================================
+# CONFIGURACIÓN DE ACTIVOS (Mantenemos tu lista extendida)
+# =============================================================================
 ASSETS = {
-    # Estados Unidos
-    'sp500': {'label': 'S&P 500', 'symbol': '^GSPC', 'color': '#3b82f6', 'category': 'US Equity'},
-    'nasdaq': {'label': 'NASDAQ', 'symbol': '^IXIC', 'color': '#8b5cf6', 'category': 'US Equity'},
-    'dow': {'label': 'Dow Jones', 'symbol': '^DJI', 'color': '#10b981', 'category': 'US Equity'},
-    'russell': {'label': 'Russell 2000', 'symbol': '^RUT', 'color': '#06b6d4', 'category': 'US Equity'},
-    
-    # Europa
-    'ftse': {'label': 'FTSE 100', 'symbol': '^FTSE', 'color': '#f97316', 'category': 'Europe Equity'},
-    'dax': {'label': 'DAX', 'symbol': '^GDAXI', 'color': '#eab308', 'category': 'Europe Equity'},
-    'cac40': {'label': 'CAC 40', 'symbol': '^FCHI', 'color': '#84cc16', 'category': 'Europe Equity'},
-    'stoxx50': {'label': 'Euro Stoxx 50', 'symbol': '^STOXX50E', 'color': '#06b6d4', 'category': 'Europe Equity'},
-    
-    # Asia
-    'nikkei': {'label': 'Nikkei 225', 'symbol': '^N225', 'color': '#ec4899', 'category': 'Asia Equity'},
-    'hang_seng': {'label': 'Hang Seng', 'symbol': '^HSI', 'color': '#d946ef', 'category': 'Asia Equity'},
-    'shanghai': {'label': 'Shanghai', 'symbol': '000001.SS', 'color': '#c026d3', 'category': 'Asia Equity'},
-    
-    # ETFs Sectoriales
-    'qqq': {'label': 'QQQ', 'symbol': 'QQQ', 'color': '#8b5cf6', 'category': 'US ETF'},
-    'spy': {'label': 'SPY', 'symbol': 'SPY', 'color': '#3b82f6', 'category': 'US ETF'},
-    'xlk': {'label': 'XLK Tech', 'symbol': 'XLK', 'color': '#8b5cf6', 'category': 'Sector ETF'},
-    'xlf': {'label': 'XLF Finance', 'symbol': 'XLF', 'color': '#10b981', 'category': 'Sector ETF'},
-    'xle': {'label': 'XLE Energy', 'symbol': 'XLE', 'color': '#000000', 'category': 'Sector ETF'},
-    'xlv': {'label': 'XLV Health', 'symbol': 'XLV', 'color': '#dc2626', 'category': 'Sector ETF'},
-    
-    # Divisas
-    'dxy': {'label': 'DXY', 'symbol': 'DX-Y.NYB', 'color': '#f59e0b', 'category': 'FX'},
-    'eurusd': {'label': 'EUR/USD', 'symbol': 'EURUSD=X', 'color': '#3b82f6', 'category': 'FX'},
-    'gbpusd': {'label': 'GBP/USD', 'symbol': 'GBPUSD=X', 'color': '#10b981', 'category': 'FX'},
-    'usdjpy': {'label': 'USD/JPY', 'symbol': 'JPYUSD=X', 'color': '#ef4444', 'category': 'FX'},
-    
-    # Metales
-    'gold': {'label': 'Gold', 'symbol': 'GC=F', 'color': '#fbbf24', 'category': 'Metals'},
-    'silver': {'label': 'Silver', 'symbol': 'SI=F', 'color': '#d1d5db', 'category': 'Metals'},
-    'gld': {'label': 'GLD ETF', 'symbol': 'GLD', 'color': '#fbbf24', 'category': 'Metals'},
-    'slv': {'label': 'SLV ETF', 'symbol': 'SLV', 'color': '#d1d5db', 'category': 'Metals'},
-    
-    # Energía
-    'oil': {'label': 'WTI Oil', 'symbol': 'CL=F', 'color': '#000000', 'category': 'Energy'},
-    'uso': {'label': 'USO ETF', 'symbol': 'USO', 'color': '#000000', 'category': 'Energy'},
-    
-    # Bonos
-    'us10y': {'label': 'US 10Y', 'symbol': '^TNX', 'color': '#ef4444', 'category': 'Bonds'},
-    'tlt': {'label': 'TLT', 'symbol': 'TLT', 'color': '#b91c1c', 'category': 'Bonds'},
-    
-    # Volatilidad
-    'vix': {'label': 'VIX', 'symbol': '^VIX', 'color': '#ec4899', 'category': 'Volatility'},
-    
-    # Crypto
-    'btc': {'label': 'Bitcoin', 'symbol': 'BTC-USD', 'color': '#f7931a', 'category': 'Crypto'},
-    'eth': {'label': 'Ethereum', 'symbol': 'ETH-USD', 'color': '#627eea', 'category': 'Crypto'},
+    'sp500': {'label': 'S&P 500', 'symbol': '^GSPC', 'category': 'US Equity'},
+    'nasdaq': {'label': 'NASDAQ', 'symbol': '^IXIC', 'category': 'US Equity'},
+    'dow': {'label': 'Dow Jones', 'symbol': '^DJI', 'category': 'US Equity'},
+    'russell': {'label': 'Russell 2000', 'symbol': '^RUT', 'category': 'US Equity'},
+    'ftse': {'label': 'FTSE 100', 'symbol': '^FTSE', 'category': 'Europe Equity'},
+    'dax': {'label': 'DAX', 'symbol': '^GDAXI', 'category': 'Europe Equity'},
+    'cac40': {'label': 'CAC 40', 'symbol': '^FCHI', 'category': 'Europe Equity'},
+    'stoxx50': {'label': 'Euro Stoxx 50', 'symbol': '^STOXX50E', 'category': 'Europe Equity'},
+    'nikkei': {'label': 'Nikkei 225', 'symbol': '^N225', 'category': 'Asia Equity'},
+    'hang_seng': {'label': 'Hang Seng', 'symbol': '^HSI', 'category': 'Asia Equity'},
+    'qqq': {'label': 'QQQ', 'symbol': 'QQQ', 'category': 'US ETF'},
+    'spy': {'label': 'SPY', 'symbol': 'SPY', 'category': 'US ETF'},
+    'xlk': {'label': 'XLK Tech', 'symbol': 'XLK', 'category': 'Sector ETF'},
+    'xlf': {'label': 'XLF Finance', 'symbol': 'XLF', 'category': 'Sector ETF'},
+    'xle': {'label': 'XLE Energy', 'symbol': 'XLE', 'category': 'Sector ETF'},
+    'xlv': {'label': 'XLV Health', 'symbol': 'XLV', 'category': 'Sector ETF'},
+    'dxy': {'label': 'DXY Index', 'symbol': 'DX-Y.NYB', 'category': 'FX'},
+    'eurusd': {'label': 'EUR/USD', 'symbol': 'EURUSD=X', 'category': 'FX'},
+    'gbpusd': {'label': 'GBP/USD', 'symbol': 'GBPUSD=X', 'category': 'FX'},
+    'usdjpy': {'label': 'USD/JPY', 'symbol': 'JPYUSD=X', 'category': 'FX'},
+    'gold': {'label': 'Gold Futures', 'symbol': 'GC=F', 'category': 'Metals'},
+    'silver': {'label': 'Silver Futures', 'symbol': 'SI=F', 'category': 'Metals'},
+    'gld': {'label': 'GLD ETF', 'symbol': 'GLD', 'category': 'Metals'},
+    'slv': {'label': 'SLV ETF', 'symbol': 'SLV', 'category': 'Metals'},
+    'oil': {'label': 'WTI Oil', 'symbol': 'CL=F', 'category': 'Energy'},
+    'uso': {'label': 'USO ETF', 'symbol': 'USO', 'category': 'Energy'},
+    'us10y': {'label': 'US 10Y Yield', 'symbol': '^TNX', 'category': 'Bonds'},
+    'tlt': {'label': 'TLT Bond ETF', 'symbol': 'TLT', 'category': 'Bonds'},
+    'vix': {'label': 'VIX Index', 'symbol': '^VIX', 'category': 'Volatility'},
+    'btc': {'label': 'Bitcoin', 'symbol': 'BTC-USD', 'category': 'Crypto'},
+    'eth': {'label': 'Ethereum', 'symbol': 'ETH-USD', 'category': 'Crypto'},
+    'nvda': {'label': 'NVIDIA', 'symbol': 'NVDA', 'category': 'Tech Stocks'},
+    'amd': {'label': 'AMD', 'symbol': 'AMD', 'category': 'Tech Stocks'},
+    'msft': {'label': 'Microsoft', 'symbol': 'MSFT', 'category': 'Tech Stocks'},
+    'aapl': {'label': 'Apple', 'symbol': 'AAPL', 'category': 'Tech Stocks'},
+    'ko': {'label': 'Coca-Cola', 'symbol': 'KO', 'category': 'Consumer'},
+    'pep': {'label': 'PepsiCo', 'symbol': 'PEP', 'category': 'Consumer'},
 }
 
+# =============================================================================
+# FUNCIONES DE LÓGICA Y CÁLCULO
+# =============================================================================
+
 @st.cache_data(ttl=3600)
-def fetch_asset_data(symbol, start_date='2000-01-01', end_date=None):
-    """Descarga datos históricos"""
+def fetch_asset_data(symbol, start_date='2015-01-01', end_date=None):
+    """Descarga datos históricos con manejo de errores."""
     if end_date is None:
         end_date = datetime.now().strftime('%Y-%m-%d')
-    
     try:
         data = yf.download(symbol, start=start_date, end=end_date, progress=False)
-        if data.empty:
+        if data.empty: return None
+        # Manejo flexible de columnas de Yahoo Finance
+        if 'Adj Close' in data.columns:
+            prices = data['Adj Close']
+        elif 'Close' in data.columns:
+            prices = data['Close']
+        else:
             return None
-        prices = data['Adj Close'] if 'Adj Close' in data.columns else data['Close']
+            
+        # Si es un DataFrame multi-index (caso reciente de yfinance), aplanar
+        if isinstance(prices, pd.DataFrame):
+            if symbol in prices.columns:
+                prices = prices[symbol]
+            else:
+                prices = prices.iloc[:, 0]
+                
         return prices.dropna()
     except Exception as e:
-        st.error(f"Error descargando {symbol}: {str(e)}")
         return None
 
 @st.cache_data(ttl=3600)
-def download_selected_assets(selected_keys, delay=10):
-    """Descarga activos seleccionados"""
+def download_selected_assets(selected_keys):
+    """Descarga en lote."""
     all_data = {}
     progress_bar = st.progress(0)
     status_text = st.empty()
     
+    total = len(selected_keys)
     for idx, key in enumerate(selected_keys):
-        asset_info = ASSETS[key]
-        symbol = asset_info['symbol']
-        
-        status_text.text(f"Descargando {asset_info['label']} ({idx+1}/{len(selected_keys)})...")
-        
+        symbol = ASSETS[key]['symbol']
+        status_text.caption(f"Descargando {ASSETS[key]['label']} ({idx+1}/{total})...")
         data = fetch_asset_data(symbol)
         if data is not None:
             all_data[key] = data
-        
-        progress_bar.progress((idx + 1) / len(selected_keys))
-        
-        if idx < len(selected_keys) - 1:
-            time.sleep(delay)
+        progress_bar.progress((idx + 1) / total)
+        time.sleep(0.1) # Pequeño delay para no saturar API
     
     progress_bar.empty()
     status_text.empty()
-    
     return all_data
 
 def merge_asset_data(data_dict):
-    """Combina datos en DataFrame"""
-    if not data_dict:
-        return pd.DataFrame()
+    """Combina series temporales."""
+    if not data_dict: return pd.DataFrame()
     
-    dfs = []
-    for key, data in data_dict.items():
-        if isinstance(data, pd.Series):
-            df_temp = data.to_frame(name=key)
-        else:
-            df_temp = data.copy()
-            df_temp.columns = [key]
-        dfs.append(df_temp)
-    
-    if not dfs:
-        return pd.DataFrame()
-    
-    df = dfs[0]
-    for df_temp in dfs[1:]:
-        df = df.join(df_temp, how='inner')
-    
+    # Asegurar que todo sean Series con nombre
+    series_list = []
+    for k, v in data_dict.items():
+        s = v.copy()
+        s.name = k
+        series_list.append(s)
+        
+    df = pd.concat(series_list, axis=1, join='inner')
     return df
 
-def calculate_returns(prices):
-    """Calcula retornos logarítmicos"""
-    return np.log(prices / prices.shift(1)).dropna()
-
-def calculate_rolling_correlation(df, asset1, asset2, window=30):
-    """Calcula correlación móvil"""
-    returns1 = calculate_returns(df[asset1])
-    returns2 = calculate_returns(df[asset2])
-    rolling_corr = returns1.rolling(window).corr(returns2)
-    return rolling_corr
-
-def test_cointegration(prices1, prices2):
-    """Test de cointegración"""
-    try:
-        score, pvalue, _ = coint(prices1, prices2)
-        return {'score': score, 'pvalue': pvalue, 'cointegrated': pvalue < 0.05}
-    except:
-        return {'score': np.nan, 'pvalue': np.nan, 'cointegrated': False}
-
 def calculate_spread(prices1, prices2):
-    """Calcula spread para pairs trading"""
-    prices1_clean = prices1.dropna()
-    prices2_clean = prices2.dropna()
+    """
+    Calcula el spread usando OLS (Ordinary Least Squares).
+    Spread = Precio1 - (Hedge_Ratio * Precio2)
+    """
+    # Alineación de datos
+    common_idx = prices1.index.intersection(prices2.index)
+    p1 = prices1.loc[common_idx]
+    p2 = prices2.loc[common_idx]
     
-    common_idx = prices1_clean.index.intersection(prices2_clean.index)
-    prices1_clean = prices1_clean.loc[common_idx]
-    prices2_clean = prices2_clean.loc[common_idx]
+    # Regresión Lineal (OLS)
+    # p1 = alpha + beta * p2 + error
+    X = sm.add_constant(p2)
+    model = sm.OLS(p1, X).fit()
     
-    hedge_ratio = np.polyfit(prices2_clean, prices1_clean, 1)[0]
-    spread = prices1_clean - hedge_ratio * prices2_clean
-    return spread, hedge_ratio
+    hedge_ratio = model.params[1]
+    alpha = model.params[0]
+    
+    # El spread son los residuos del modelo (error)
+    spread = p1 - (hedge_ratio * p2) - alpha 
+    
+    return spread, hedge_ratio, alpha, model.rsquared
 
 def calculate_zscore(series, window=30):
-    """Calcula Z-Score rolling"""
+    """Calcula el Z-Score rolling (desviaciones estándar de la media)."""
     mean = series.rolling(window).mean()
     std = series.rolling(window).std()
-    return (series - mean) / std
+    zscore = (series - mean) / std
+    return zscore
+
+def calculate_half_life(spread):
+    """
+    Calcula la Vida Media (Half-Life) de reversión a la media.
+    Indica cuánto tiempo tarda el spread en revertir la mitad de su desviación.
+    Basado en proceso Ornstein-Uhlenbeck.
+    """
+    spread_lag = spread.shift(1)
+    spread_lag.iloc[0] = spread_lag.iloc[1]
+    
+    spread_ret = spread - spread_lag
+    spread_ret.iloc[0] = spread_ret.iloc[1]
+    
+    spread_lag2 = sm.add_constant(spread_lag)
+    
+    model = sm.OLS(spread_ret, spread_lag2)
+    res = model.fit()
+    
+    lambda_param = res.params[1]
+    
+    if lambda_param >= 0:
+        return np.inf # No revierte a la media
+        
+    half_life = -np.log(2) / lambda_param
+    return half_life
 
 def calculate_hurst_exponent(series, max_lag=100):
-    """Calcula Hurst Exponent"""
+    """Calcula Exponente Hurst para medir persistencia vs reversión."""
     lags = range(2, min(max_lag, len(series)//2))
-    tau = [np.std(np.subtract(series[lag:], series[:-lag])) for lag in lags]
-    
+    tau = [np.sqrt(np.std(np.subtract(series[lag:], series[:-lag]))) for lag in lags]
     try:
         poly = np.polyfit(np.log(lags), np.log(tau), 1)
         return poly[0] * 2.0
     except:
         return np.nan
 
-def adf_test(series):
-    """Test de estacionariedad"""
-    try:
-        result = adfuller(series.dropna())
-        return {'adf_stat': result[0], 'pvalue': result[1], 'stationary': result[1] < 0.05}
-    except:
-        return {'adf_stat': np.nan, 'pvalue': np.nan, 'stationary': False}
-
-def find_best_pairs_positive(df, min_correlation=0.7, min_cointegration_pvalue=0.05):
-    """Encuentra mejores pares con correlación POSITIVA"""
-    assets = df.columns
-    candidates = []
+def run_simple_backtest(spread, zscore, entry_threshold=2.0, exit_threshold=0.0):
+    """
+    Simulación simple de estrategia:
+    - Vender Spread cuando Z > entry_threshold
+    - Comprar Spread cuando Z < -entry_threshold
+    - Cerrar cuando Z cruza exit_threshold
+    """
+    signals = pd.Series(index=spread.index, data=0)
+    position = 0 # 0: flat, 1: long, -1: short
     
-    for i, asset1 in enumerate(assets):
-        for asset2 in assets[i+1:]:
-            try:
-                prices1 = df[asset1].dropna()
-                prices2 = df[asset2].dropna()
-                
-                common_idx = prices1.index.intersection(prices2.index)
-                if len(common_idx) < 252:
-                    continue
-                
-                p1 = prices1.loc[common_idx]
-                p2 = prices2.loc[common_idx]
-                
-                # Correlación
-                correlation = p1.corr(p2)
-                if correlation < min_correlation:
-                    continue
-                
-                # Cointegración
-                coint_result = test_cointegration(p1, p2)
-                if not coint_result['cointegrated']:
-                    continue
-                
-                # Spread y Hurst
-                spread, _ = calculate_spread(p1, p2)
-                hurst = calculate_hurst_exponent(spread.dropna())
-                
-                # Score
-                score = 0
-                if coint_result['pvalue'] < min_cointegration_pvalue:
-                    score += 40
-                if correlation > 0.8:
-                    score += 30
-                elif correlation > 0.7:
-                    score += 20
-                if hurst < 0.5:
-                    score += 30
-                
-                candidates.append({
-                    'asset1': asset1,
-                    'asset2': asset2,
-                    'score': score,
-                    'correlation': correlation,
-                    'cointegration_pvalue': coint_result['pvalue'],
-                    'hurst': hurst
-                })
-            except:
-                continue
+    positions_history = []
     
-    # FIX: Verificar si hay candidatos antes de crear DataFrame
-    if len(candidates) == 0:
-        return pd.DataFrame(columns=['asset1', 'asset2', 'score', 'correlation', 
-                                    'cointegration_pvalue', 'hurst'])
-    
-    return pd.DataFrame(candidates).sort_values('score', ascending=False)
-
-def find_best_pairs_inverse(df, min_negative_correlation=-0.7, max_correlation=-0.3):
-    """Encuentra mejores pares con correlación INVERSA"""
-    assets = df.columns
-    candidates = []
-    
-    for i, asset1 in enumerate(assets):
-        for asset2 in assets[i+1:]:
-            try:
-                prices1 = df[asset1].dropna()
-                prices2 = df[asset2].dropna()
-                
-                common_idx = prices1.index.intersection(prices2.index)
-                if len(common_idx) < 252:
-                    continue
-                
-                p1 = prices1.loc[common_idx]
-                p2 = prices2.loc[common_idx]
-                
-                # Correlación
-                correlation = p1.corr(p2)
-                if correlation > max_correlation or correlation < min_negative_correlation:
-                    continue
-                
-                # Volatilidad
-                returns1 = calculate_returns(p1)
-                returns2 = calculate_returns(p2)
-                vol1 = returns1.std() * np.sqrt(252)
-                vol2 = returns2.std() * np.sqrt(252)
-                vol_ratio = min(vol1, vol2) / max(vol1, vol2)
-                
-                # Estabilidad
-                rolling_corr = returns1.rolling(60).corr(returns2)
-                corr_std = rolling_corr.std()
-                
-                # Score
-                score = 0
-                if correlation < -0.7:
-                    score += 40
-                elif correlation < -0.5:
-                    score += 25
-                
-                if corr_std < 0.1:
-                    score += 30
-                elif corr_std < 0.2:
-                    score += 20
-                
-                if vol_ratio > 0.7:
-                    score += 20
-                
-                candidates.append({
-                    'asset1': asset1,
-                    'asset2': asset2,
-                    'score': score,
-                    'correlation': correlation,
-                    'corr_stability': corr_std,
-                    'vol_ratio': vol_ratio
-                })
-            except:
-                continue
-    
-    # FIX: Verificar si hay candidatos
-    if len(candidates) == 0:
-        return pd.DataFrame(columns=['asset1', 'asset2', 'score', 'correlation', 
-                                    'corr_stability', 'vol_ratio'])
-    
-    return pd.DataFrame(candidates).sort_values('score', ascending=False)
-
-def plot_rolling_correlation(corr_series, asset1_name, asset2_name):
-    """Gráfico de correlación rolling"""
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=corr_series.index,
-        y=corr_series,
-        mode='lines',
-        name='Correlation',
-        line=dict(color='#3b82f6', width=3)
-    ))
-    
-    fig.add_hline(y=0, line_dash="dash", line_color="#666666")
-    fig.add_hline(y=0.5, line_dash="dot", line_color="#10b981", opacity=0.5)
-    fig.add_hline(y=-0.5, line_dash="dot", line_color="#ef4444", opacity=0.5)
-    
-    fig.update_layout(
-        title=f'Rolling Correlation: {asset1_name} vs {asset2_name}',
-        xaxis_title='Date',
-        yaxis_title='Correlation',
-        yaxis=dict(range=[-1, 1]),
-        template='plotly_dark',
-        hovermode='x unified',
-        height=500
-    )
-    
-    return fig
-
-def plot_correlation_heatmap(df, selected_assets):
-    """Heatmap de correlaciones"""
-    corr_matrix = df[selected_assets].corr()
-    
-    fig = go.Figure(data=go.Heatmap(
-        z=corr_matrix.values,
-        x=[ASSETS[a]['label'] for a in selected_assets],
-        y=[ASSETS[a]['label'] for a in selected_assets],
-        colorscale='RdBu',
-        zmid=0,
-        zmin=-1,
-        zmax=1,
-        text=corr_matrix.values,
-        texttemplate='%{text:.2f}',
-        textfont={"size": 10},
-        colorbar=dict(title="Correlation")
-    ))
-    
-    fig.update_layout(
-        title='Correlation Matrix',
-        template='plotly_dark',
-        height=600
-    )
-    
-    return fig
-
-def plot_price_comparison(df, asset1, asset2, asset1_name, asset2_name):
-    """Gráfico comparativo de precios"""
-    fig = go.Figure()
-    
-    norm1 = (df[asset1] / df[asset1].iloc[0]) * 100
-    norm2 = (df[asset2] / df[asset2].iloc[0]) * 100
-    
-    fig.add_trace(go.Scatter(
-        x=df.index, y=norm1, name=asset1_name,
-        line=dict(color=ASSETS[asset1]['color'], width=2)
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=df.index, y=norm2, name=asset2_name,
-        line=dict(color=ASSETS[asset2]['color'], width=2)
-    ))
-    
-    fig.update_layout(
-        title='Price Comparison (Base 100)',
-        template='plotly_dark',
-        hovermode='x unified',
-        height=400
-    )
-    
-    return fig
-
-def plot_spread_analysis(prices1, prices2, asset1_name, asset2_name):
-    """Análisis de spread"""
-    spread, hedge_ratio = calculate_spread(prices1, prices2)
-    zscore = calculate_zscore(spread, window=30)
-    
-    fig = make_subplots(
-        rows=2, cols=1,
-        subplot_titles=(
-            f'Spread: {asset1_name} - {hedge_ratio:.4f} * {asset2_name}',
-            'Z-Score'
-        ),
-        vertical_spacing=0.15
-    )
-    
-    fig.add_trace(go.Scatter(
-        x=spread.index, y=spread, name='Spread',
-        line=dict(color='#3b82f6', width=2)
-    ), row=1, col=1)
-    
-    fig.add_trace(go.Scatter(
-        x=zscore.index, y=zscore, name='Z-Score',
-        line=dict(color='#8b5cf6', width=2)
-    ), row=2, col=1)
-    
-    fig.add_hline(y=2, line_dash="dash", line_color="#ef4444", row=2, col=1)
-    fig.add_hline(y=-2, line_dash="dash", line_color="#10b981", row=2, col=1)
-    fig.add_hline(y=0, line_dash="dot", line_color="#666666", row=2, col=1)
-    
-    fig.update_layout(height=700, template='plotly_dark')
-    
-    return fig
-
-def plot_pairs_ranking(pairs_df, top_n=15, title="Best Pairs"):
-    """Ranking de pares"""
-    if len(pairs_df) == 0:
-        return None
-    
-    top_pairs = pairs_df.head(top_n).copy()
-    top_pairs['pair_label'] = top_pairs['asset1'].apply(lambda x: ASSETS[x]['label']) + ' / ' + \
-                               top_pairs['asset2'].apply(lambda x: ASSETS[x]['label'])
-    
-    fig = go.Figure()
-    
-    fig.add_trace(go.Bar(
-        y=top_pairs['pair_label'],
-        x=top_pairs['score'],
-        orientation='h',
-        marker=dict(
-            color=top_pairs['score'],
-            colorscale='Viridis',
-            showscale=True
-        ),
-        text=top_pairs['score'].round(1),
-        textposition='auto'
-    ))
-    
-    fig.update_layout(
-        title=title,
-        xaxis_title='Score',
-        yaxis_title='Pair',
-        template='plotly_dark',
-        height=600,
-        yaxis={'categoryorder': 'total ascending'}
-    )
-    
-    return fig
-
-# =============================================================================
-# INTERFAZ PRINCIPAL
-# =============================================================================
-
-st.title("📊 Pairs Trading & Correlation Analyzer")
-st.markdown("🔍 Búsqueda de Pares Correlacionados e Inversamente Correlacionados")
-
-# Sidebar
-st.sidebar.header("⚙️ Configuración")
-
-# Categorías
-categories = list(set([ASSETS[k]['category'] for k in ASSETS.keys()]))
-categories.sort()
-selected_categories = st.sidebar.multiselect(
-    "Categorías",
-    options=categories,
-    default=['US Equity', 'FX', 'Metals', 'Crypto']
-)
-
-available_assets = [k for k in ASSETS.keys() if ASSETS[k]['category'] in selected_categories]
-
-# Selección de activos
-default_assets = ['sp500', 'nasdaq', 'gold', 'btc', 'dxy', 'vix']
-selected_assets = st.sidebar.multiselect(
-    "Activos (mín. 2)",
-    options=available_assets,
-    default=[a for a in default_assets if a in available_assets],
-    format_func=lambda x: f"{ASSETS[x]['label']} ({ASSETS[x]['category']})"
-)
-
-if len(selected_assets) < 2:
-    st.warning("⚠️ Selecciona al menos 2 activos")
-    st.stop()
-
-st.sidebar.info(f"✅ {len(selected_assets)} activos seleccionados")
-
-# Parámetros
-window_size = st.sidebar.slider("Ventana correlación (días)", 10, 90, 30, 5)
-download_delay = st.sidebar.slider("Delay descargas (seg)", 1, 30, 10, 1)
-
-# Período
-date_range = st.sidebar.selectbox(
-    "Período",
-    ['Todo', '5 años', '3 años', '2 años', '1 año']
-)
-
-# Descarga de datos
-if 'data_loaded' not in st.session_state:
-    st.session_state.data_loaded = False
-
-if st.sidebar.button("📥 Descargar Datos", type="primary", disabled=st.session_state.data_loaded):
-    with st.spinner("Descargando datos..."):
-        asset_data = download_selected_assets(selected_assets, delay=download_delay)
-    
-    if not asset_data:
-        st.error("Error descargando datos")
-        st.stop()
-    
-    df_prices = merge_asset_data(asset_data)
-    
-    if df_prices.empty:
-        st.error("No hay datos suficientes")
-        st.stop()
-    
-    if date_range != 'Todo':
-        days_map = {'1 año': 252, '2 años': 504, '3 años': 756, '5 años': 1260}
-        days = days_map[date_range]
-        df_prices = df_prices.iloc[-days:]
-    
-    st.session_state.df_prices = df_prices
-    st.session_state.data_loaded = True
-    st.success(f"✅ Datos cargados: {len(df_prices)} días")
-    st.rerun()
-
-if st.sidebar.button("🔄 Limpiar"):
-    st.session_state.data_loaded = False
-    if 'df_prices' in st.session_state:
-        del st.session_state.df_prices
-    st.cache_data.clear()
-    st.rerun()
-
-if not st.session_state.data_loaded:
-    st.info("""
-    ### 👋 Bienvenido!
-    
-    **Para comenzar:**
-    1. 📂 Selecciona categorías y activos
-    2. ⚙️ Configura parámetros
-    3. 📥 Presiona 'Descargar Datos'
-    
-    **Funcionalidades:**
-    - 🔍 Búsqueda automática de pares correlacionados
-    - 🛡️ Búsqueda de pares inversamente correlacionados (hedging)
-    - 📊 Análisis de correlación detallado
-    - 🎯 Pairs trading (spread, z-score, cointegración)
-    """)
-    st.stop()
-
-df_prices = st.session_state.df_prices
-st.success(f"✅ {len(df_prices)} días | {df_prices.index[0].date()} → {df_prices.index[-1].date()}")
-
-# =============================================================================
-# TABS
-# =============================================================================
-
-tab1, tab2, tab3, tab4 = st.tabs([
-    "📈 Análisis de Pares",
-    "🔥 Matriz de Correlación",
-    "🔍 Búsqueda Correlación Positiva",
-    "🛡️ Búsqueda Correlación Inversa"
-])
-
-with tab1:
-    st.subheader("📈 Análisis Detallado")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        asset1 = st.selectbox(
-            "Activo 1",
-            options=selected_assets,
-            format_func=lambda x: ASSETS[x]['label']
-        )
-    
-    with col2:
-        asset2 = st.selectbox(
-            "Activo 2",
-            options=[a for a in selected_assets if a != asset1],
-            format_func=lambda x: ASSETS[x]['label']
-        )
-    
-    # Correlación
-    corr_series = calculate_rolling_correlation(df_prices, asset1, asset2, window_size)
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("Correlación Actual", f"{corr_series.iloc[-1]:.4f}")
-    col2.metric("Correlación Media", f"{corr_series.mean():.4f}")
-    col3.metric("Máxima", f"{corr_series.max():.4f}")
-    
-    st.plotly_chart(
-        plot_rolling_correlation(corr_series, ASSETS[asset1]['label'], ASSETS[asset2]['label']),
-        use_container_width=True
-    )
-    
-    # Precios
-    st.plotly_chart(
-        plot_price_comparison(df_prices, asset1, asset2, ASSETS[asset1]['label'], ASSETS[asset2]['label']),
-        use_container_width=True
-    )
-    
-    # Tests
-    st.subheader("📊 Tests Estadísticos")
-    
-    prices1 = df_prices[asset1]
-    prices2 = df_prices[asset2]
-    
-    coint_test = test_cointegration(prices1, prices2)
-    spread, hedge_ratio = calculate_spread(prices1, prices2)
-    adf_result = adf_test(spread)
-    hurst = calculate_hurst_exponent(spread.dropna())
-    
-    col1, col2, col3 = st.columns(3)
-    
-    col1.metric(
-        "Cointegración",
-        "✅ SÍ" if coint_test['cointegrated'] else "❌ NO",
-        delta=f"p-value: {coint_test['pvalue']:.4f}"
-    )
-    
-    col2.metric(
-        "Estacionariedad",
-        "✅ SÍ" if adf_result['stationary'] else "❌ NO",
-        delta=f"p-value: {adf_result['pvalue']:.4f}"
-    )
-    
-    col3.metric(
-        "Hurst Exponent",
-        f"{hurst:.3f}",
-        delta="Mean Reverting" if hurst < 0.5 else "Trending"
-    )
-    
-    # Spread
-    if coint_test['cointegrated']:
-        st.subheader("📊 Análisis de Spread")
-        st.plotly_chart(
-            plot_spread_analysis(prices1, prices2, ASSETS[asset1]['label'], ASSETS[asset2]['label']),
-            use_container_width=True
-        )
-
-with tab2:
-    st.subheader("🔥 Matriz de Correlaciones")
-    st.plotly_chart(
-        plot_correlation_heatmap(df_prices, selected_assets),
-        use_container_width=True
-    )
-    
-    # Tabla
-    st.subheader("📋 Tabla de Correlaciones")
-    corr_matrix = df_prices[selected_assets].corr()
-    
-    def color_correlation(val):
-        if val >= 0.7:
-            return 'background-color: #10b981; color: white'
-        elif val >= 0.3:
-            return 'background-color: #84cc16; color: white'
-        elif val > -0.3:
-            return 'background-color: #6b7280; color: white'
-        elif val > -0.7:
-            return 'background-color: #f59e0b; color: white'
-        else:
-            return 'background-color: #ef4444; color: white'
-    
-    styled_df = corr_matrix.style.applymap(color_correlation).format("{:.2f}")
-    st.dataframe(styled_df, use_container_width=True)
-
-with tab3:
-    st.subheader("🔍 Búsqueda de Pares - Correlación Positiva")
-    st.caption("Ideal para pairs trading y mean reversion")
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        min_corr = st.slider("Correlación mínima", 0.5, 0.95, 0.7, 0.05)
-    
-    with col2:
-        max_pvalue = st.slider("P-value máx (coint.)", 0.01, 0.10, 0.05, 0.01)
-    
-    if st.button("🔎 Buscar Pares Positivos", type="primary"):
-        with st.spinner("Analizando pares..."):
-            best_pairs = find_best_pairs_positive(
-                df_prices[selected_assets],
-                min_correlation=min_corr,
-                min_cointegration_pvalue=max_pvalue
-            )
+    for z in zscore:
+        if position == 0:
+            if z > entry_threshold:
+                position = -1 # Short Spread
+            elif z < -entry_threshold:
+                position = 1 # Long Spread
+        elif position == -1:
+            if z < exit_threshold:
+                position = 0 # Exit Short
+        elif position == 1:
+            if z > -exit_threshold:
+                position = 0 # Exit Long
+        positions_history.append(position)
         
-        if len(best_pairs) > 0:
-            st.success(f"✅ Encontrados {len(best_pairs)} pares")
-            
-            # Gráfico
-            fig = plot_pairs_ranking(best_pairs, top_n=15, title="Top Pares - Correlación Positiva")
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Tabla
-            st.markdown("### 📋 Resultados Detallados")
-            
-            display_df = best_pairs.head(20).copy()
-            display_df['Activo 1'] = display_df['asset1'].apply(lambda x: ASSETS[x]['label'])
-            display_df['Activo 2'] = display_df['asset2'].apply(lambda x: ASSETS[x]['label'])
-            
-            display_df = display_df[['Activo 1', 'Activo 2', 'score', 'correlation', 
-                                     'cointegration_pvalue', 'hurst']]
-            
-            st.dataframe(
-                display_df.style.format({
-                    'score': '{:.1f}',
-                    'correlation': '{:.3f}',
-                    'cointegration_pvalue': '{:.4f}',
-                    'hurst': '{:.3f}'
-                }),
-                use_container_width=True
-            )
-            
-            # Mejor par
-            if len(best_pairs) > 0:
-                st.markdown("### 🏆 Mejor Par")
-                best = best_pairs.iloc[0]
-                
-                st.info(f"**{ASSETS[best['asset1']]['label']} / {ASSETS[best['asset2']]['label']}** | Score: {best['score']:.1f}")
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Correlación", f"{best['correlation']:.3f}")
-                col2.metric("P-value Coint.", f"{best['cointegration_pvalue']:.4f}")
-                col3.metric("Hurst", f"{best['hurst']:.3f}")
-            
-            # Descarga
-            csv = best_pairs.to_csv(index=False)
-            st.download_button(
-                "📥 Descargar CSV",
-                csv,
-                "pares_positivos.csv",
-                "text/csv"
-            )
-        else:
-            st.warning("⚠️ No se encontraron pares. Relaja los parámetros.")
-
-with tab4:
-    st.subheader("🛡️ Búsqueda de Pares - Correlación Inversa")
-    st.caption("Ideal para hedging y diversificación")
+    signals = pd.Series(positions_history, index=spread.index)
     
-    col1, col2 = st.columns(2)
+    # Calcular PnL aproximado (Spread Diff * Posición de ayer)
+    spread_diff = spread.diff()
+    pnl_daily = spread_diff * signals.shift(1)
+    cumulative_pnl = pnl_daily.cumsum()
     
-    with col1:
-        min_neg_corr = st.slider("Corr. mín. (negativa)", -0.95, -0.3, -0.7, 0.05)
-    
-    with col2:
-        max_neg_corr = st.slider("Corr. máx. (negativa)", -0.95, -0.3, -0.3, 0.05)
-    
-    if st.button("🔎 Buscar Pares Inversos", type="primary"):
-        with st.spinner("Analizando pares inversos..."):
-            inverse_pairs = find_best_pairs_inverse(
-                df_prices[selected_assets],
-                min_negative_correlation=min_neg_corr,
-                max_correlation=max_neg_corr
-            )
-        
-        if len(inverse_pairs) > 0:
-            st.success(f"✅ Encontrados {len(inverse_pairs)} pares inversos")
-            
-            # Gráfico
-            fig = plot_pairs_ranking(inverse_pairs, top_n=15, title="Top Pares - Correlación Inversa")
-            if fig:
-                st.plotly_chart(fig, use_container_width=True)
-            
-            # Tabla
-            st.markdown("### 📋 Resultados Detallados")
-            
-            display_df = inverse_pairs.head(20).copy()
-            display_df['Activo 1'] = display_df['asset1'].apply(lambda x: ASSETS[x]['label'])
-            display_df['Activo 2'] = display_df['asset2'].apply(lambda x: ASSETS[x]['label'])
-            
-            display_df = display_df[['Activo 1', 'Activo 2', 'score', 'correlation', 
-                                     'corr_stability', 'vol_ratio']]
-            
-            st.dataframe(
-                display_df.style.format({
-                    'score': '{:.1f}',
-                    'correlation': '{:.3f}',
-                    'corr_stability': '{:.3f}',
-                    'vol_ratio': '{:.2f}'
-                }),
-                use_container_width=True
-            )
-            
-            # Mejor par
-            if len(inverse_pairs) > 0:
-                st.markdown("### 🏆 Mejor Par Inverso")
-                best = inverse_pairs.iloc[0]
-                
-                st.info(f"**{ASSETS[best['asset1']]['label']} / {ASSETS[best['asset2']]['label']}** | Score: {best['score']:.1f}")
-                
-                col1, col2, col3 = st.columns(3)
-                col1.metric("Correlación", f"{best['correlation']:.3f}")
-                col2.metric("Estabilidad", f"{best['corr_stability']:.3f}")
-                col3.metric("Vol Ratio", f"{best['vol_ratio']:.2f}")
-                
-                st.success(f"✅ Ideal para hedging: correlación negativa estable")
-            
-            # Descarga
-            csv = inverse_pairs.to_csv(index=False)
-            st.download_button(
-                "📥 Descargar CSV",
-                csv,
-                "pares_inversos.csv",
-                "text/csv"
-            )
-        else:
-            st.warning("⚠️ No se encontraron pares inversos. Ajusta el rango.")
+    return cumulative_pnl, signals
 
-# Sidebar - Info
-st.sidebar.markdown("---")
-st.sidebar.markdown("### 📚 Guía")
-st.sidebar.info("""
-**Correlación Positiva (Tab 3):**
-- > 0.7: Pairs trading
-- Cointegración importante
-- Hurst < 0.5: Mean reversion
+# =============================================================================
+# INTERFAZ DE USUARIO
+# =============================================================================
 
-**Correlación Inversa (Tab 4):**
-- < -0.5: Hedging
-- Reduce volatilidad
-- Protección en caídas
-
-**Z-Score Trading:**
-- > 2: Vender spread
-- < -2: Comprar spread
+st.title("🎓 Pairs Trading & Statistical Arbitrage Lab")
+st.markdown("""
+Esta aplicación no solo analiza pares, sino que te **enseña** cómo funciona el arbitraje estadístico.
+Selecciona activos, analiza su relación matemática y simula estrategias.
 """)
 
-st.sidebar.markdown("---")
-st.sidebar.success("✨ Simplificado para búsqueda de pares")
+# --- SIDEBAR ---
+with st.sidebar:
+    st.header("⚙️ Configuración de Estudio")
+    
+    # Filtro de Categorías
+    all_cats = sorted(list(set([v['category'] for v in ASSETS.values()])))
+    sel_cats = st.multiselect("Filtrar Categorías", all_cats, default=['US Equity', 'Metals', 'Tech Stocks', 'Consumer'])
+    
+    # Filtro de Activos
+    avail_assets = [k for k, v in ASSETS.items() if v['category'] in sel_cats]
+    
+    # Selección Multi
+    st.subheader("1. Selección de Datos")
+    selected_assets = st.multiselect(
+        "Selecciona Activos (mínimo 2)", 
+        avail_assets, 
+        default=['ko', 'pep'] if 'ko' in avail_assets else avail_assets[:2],
+        format_func=lambda x: f"{ASSETS[x]['label']} ({x.upper()})"
+    )
+    
+    if len(selected_assets) < 2:
+        st.error("Necesitas al menos 2 activos.")
+        st.stop()
+        
+    # Botón de Descarga
+    if st.button("📥 Descargar/Actualizar Datos", type="primary"):
+        with st.spinner("Obteniendo datos de mercado..."):
+            raw_data = download_selected_assets(selected_assets)
+            st.session_state['df_prices'] = merge_asset_data(raw_data)
+            st.success("Datos cargados.")
+    
+    st.subheader("2. Parámetros del Modelo")
+    window_size = st.slider("Ventana de Rolling (Días)", 10, 100, 30, help="Días para calcular la media móvil y desviación estándar del Z-Score.")
+    
+    st.info("💡 **Tip:** Comienza con Coca-Cola (KO) y Pepsi (PEP) para ver una correlación clásica.")
+
+# Verificar datos
+if 'df_prices' not in st.session_state or st.session_state['df_prices'].empty:
+    st.warning("👈 Por favor, selecciona tus activos y presiona 'Descargar Datos' en la barra lateral.")
+    st.stop()
+
+df = st.session_state['df_prices']
+
+# --- TABS PRINCIPALES ---
+tab_analysis, tab_backtest, tab_educational, tab_scanner = st.tabs([
+    "🔬 Laboratorio de Análisis", 
+    "💰 Simulación (Backtest)", 
+    "📚 Conceptos Teóricos",
+    "📡 Scanner Automático"
+])
+
+# -----------------------------------------------------------------------------
+# TAB 1: ANÁLISIS DETALLADO
+# -----------------------------------------------------------------------------
+with tab_analysis:
+    col_a, col_b = st.columns(2)
+    with col_a:
+        asset1 = st.selectbox("Activo Y (Dependiente)", df.columns, format_func=lambda x: ASSETS[x]['label'])
+    with col_b:
+        asset2 = st.selectbox("Activo X (Independiente)", [c for c in df.columns if c != asset1], format_func=lambda x: ASSETS[x]['label'])
+
+    # Cálculos principales
+    p1 = df[asset1]
+    p2 = df[asset2]
+    
+    # 1. Correlación
+    corr = p1.corr(p2)
+    
+    # 2. Spread y Cointegración
+    spread, hedge_ratio, alpha, r_squared = calculate_spread(p1, p2)
+    coint_res = coint(p1, p2)
+    is_coint = coint_res[1] < 0.05
+    
+    # 3. Estadísticas Avanzadas
+    half_life = calculate_half_life(spread)
+    hurst = calculate_hurst_exponent(spread.dropna().values)
+    zscore = calculate_zscore(spread, window_size)
+    
+    # --- KPIs ---
+    st.markdown("### 📊 Métricas Clave")
+    kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+    
+    kpi1.metric(
+        "Correlación", 
+        f"{corr:.2f}", 
+        delta="Fuerte" if abs(corr)>0.8 else "Débil",
+        help="Mide qué tan similarmente se mueven los precios (1 = idéntico, -1 = opuesto)."
+    )
+    
+    kpi2.metric(
+        "Cointegración (p-value)", 
+        f"{coint_res[1]:.4f}", 
+        delta="Cointegrado ✅" if is_coint else "No Cointegrado ❌",
+        delta_color="normal" if is_coint else "inverse",
+        help="Si p < 0.05, el spread es estacionario (la liga elástica no se rompe)."
+    )
+    
+    kpi3.metric(
+        "Vida Media (Half-Life)", 
+        f"{half_life:.1f} días",
+        help="Tiempo estimado para que el spread regrese a la mitad de su camino hacia la media. Importante para saber cuánto durará el trade."
+    )
+    
+    hurst_label = "Reversión a la Media" if hurst < 0.5 else "Tendencia/Aleatorio"
+    kpi4.metric(
+        "Exponente Hurst", 
+        f"{hurst:.2f}",
+        delta=hurst_label,
+        delta_color="normal" if hurst < 0.5 else "off",
+        help="Hurst < 0.5 indica que si se aleja, tiende a volver."
+    )
+
+    # --- GRÁFICOS ---
+    
+    # 1. Comparación Normalizada
+    st.subheader("1. Dinámica de Precios (Base 100)")
+    fig_norm = go.Figure()
+    fig_norm.add_trace(go.Scatter(x=p1.index, y=(p1/p1.iloc[0])*100, name=ASSETS[asset1]['label']))
+    fig_norm.add_trace(go.Scatter(x=p2.index, y=(p2/p2.iloc[0])*100, name=ASSETS[asset2]['label']))
+    fig_norm.update_layout(template="plotly_dark", height=400)
+    st.plotly_chart(fig_norm, use_container_width=True)
+    
+    # 2. Scatter Plot (Regresión)
+    st.subheader("2. Análisis de Regresión Lineal")
+    with st.expander("¿Qué significa este gráfico?"):
+        st.write(f"""
+        Este gráfico muestra la relación precio a precio. La línea roja es el 'Valor Justo' predicho por el modelo.
+        La ecuación es: **{ASSETS[asset1]['label']} = {alpha:.2f} + {hedge_ratio:.2f} * {ASSETS[asset2]['label']}**
+        """)
+    
+    fig_scatter = px.scatter(x=p2, y=p1, labels={'x': ASSETS[asset2]['label'], 'y': ASSETS[asset1]['label']}, opacity=0.6)
+    # Añadir línea de regresión manualmente para control
+    line_x = np.linspace(p2.min(), p2.max(), 100)
+    line_y = alpha + hedge_ratio * line_x
+    fig_scatter.add_trace(go.Scatter(x=line_x, y=line_y, mode='lines', name='Regresión (Hedge Ratio)', line=dict(color='red')))
+    fig_scatter.update_layout(template="plotly_dark", height=500)
+    st.plotly_chart(fig_scatter, use_container_width=True)
+
+    # 3. Spread y Z-Score
+    st.subheader("3. Señales de Trading (Spread & Z-Score)")
+    
+    fig_z = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.1, row_heights=[0.6, 0.4],
+                          subplot_titles=("Spread Histórico (Residuos)", f"Z-Score (Normalizado a {window_size} días)"))
+    
+    # Spread
+    fig_z.add_trace(go.Scatter(x=spread.index, y=spread, name="Spread", line=dict(color='#3b82f6')), row=1, col=1)
+    fig_z.add_hline(y=spread.mean(), line_dash="dash", row=1, col=1, annotation_text="Media")
+    
+    # Z-Score
+    fig_z.add_trace(go.Scatter(x=zscore.index, y=zscore, name="Z-Score", line=dict(color='#eab308')), row=2, col=1)
+    fig_z.add_hline(y=2.0, line_dash="dot", line_color="red", row=2, col=1, annotation_text="Venta (+2)")
+    fig_z.add_hline(y=-2.0, line_dash="dot", line_color="green", row=2, col=1, annotation_text="Compra (-2)")
+    fig_z.add_hline(y=0, line_color="gray", row=2, col=1)
+    
+    # Marcar zonas de compra/venta
+    buy_signals = zscore[zscore < -2]
+    sell_signals = zscore[zscore > 2]
+    
+    fig_z.add_trace(go.Scatter(x=buy_signals.index, y=buy_signals, mode='markers', marker=dict(color='green', size=8), name='Señal Compra'), row=2, col=1)
+    fig_z.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals, mode='markers', marker=dict(color='red', size=8), name='Señal Venta'), row=2, col=1)
+
+    fig_z.update_layout(template="plotly_dark", height=700)
+    st.plotly_chart(fig_z, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# TAB 2: BACKTEST
+# -----------------------------------------------------------------------------
+with tab_backtest:
+    st.header("💰 Simulador de Estrategia (Backtest)")
+    st.markdown("""
+    Aquí simulamos qué hubiera pasado si hubieras operado este par usando bandas de desviación estándar.
+    *Nota: Esto es una simulación teórica simplificada.*
+    """)
+    
+    col_b1, col_b2, col_b3 = st.columns(3)
+    entry_z = col_b1.number_input("Entrar cuando Z-Score >", 1.0, 4.0, 2.0, 0.1)
+    exit_z = col_b2.number_input("Salir cuando Z-Score cruza", 0.0, 1.0, 0.0, 0.1)
+    
+    if st.button("🚀 Ejecutar Simulación"):
+        cum_pnl, signals = run_simple_backtest(spread, zscore, entry_z, exit_z)
+        
+        # Métricas Backtest
+        total_ret = cum_pnl.iloc[-1]
+        n_trades = signals.diff().abs().sum() / 2 # Aprox
+        
+        bk1, bk2 = st.columns(2)
+        bk1.metric("PnL Acumulado (Unidades de Spread)", f"{total_ret:.4f}")
+        bk2.metric("Operaciones Aprox.", f"{int(n_trades)}")
+        
+        # Gráfico PnL
+        fig_pnl = go.Figure()
+        fig_pnl.add_trace(go.Scatter(x=cum_pnl.index, y=cum_pnl, fill='tozeroy', mode='lines', name='PnL Acumulado'))
+        fig_pnl.update_layout(title="Curva de Equity (Teórica)", template="plotly_dark", height=400)
+        st.plotly_chart(fig_pnl, use_container_width=True)
+        
+        # Gráfico Posiciones
+        fig_pos = go.Figure()
+        fig_pos.add_trace(go.Scatter(x=signals.index, y=signals, mode='steps', name='Posición (-1, 0, 1)'))
+        fig_pos.update_layout(title="Posiciones en el Mercado", yaxis=dict(tickvals=[-1, 0, 1], ticktext=['Short Spread', 'Flat', 'Long Spread']), template="plotly_dark", height=300)
+        st.plotly_chart(fig_pos, use_container_width=True)
+
+# -----------------------------------------------------------------------------
+# TAB 3: EDUCACIÓN
+# -----------------------------------------------------------------------------
+with tab_educational:
+    st.header("📚 Conceptos Fundamentales")
+    
+    st.markdown("""
+    <div class="explanation-box">
+    <h3>1. ¿Qué es el Pairs Trading?</h3>
+    Es una estrategia neutral de mercado. No te importa si el mercado sube o baja, solo te importa la relación entre dos activos.
+    <br>Ejemplo: Si Coca-Cola y Pepsi siempre se mueven igual, pero hoy Coca-Cola sube mucho y Pepsi no, vendes Coca-Cola y compras Pepsi, esperando que vuelvan a alinearse.
+    </div>
+    """, unsafe_allow_html=True)
+    
+    with st.expander("🧩 Cointegración vs Correlación (La diferencia clave)"):
+        st.write("""
+        - **Correlación:** Mide si dos activos suben o bajan al mismo tiempo *diariamente*.
+        - **Cointegración:** Mide si la *distancia* entre dos precios se mantiene estable a largo plazo.
+        
+        **Analogía del Borracho y el Perro:**
+        Imagina un borracho paseando a su perro con una correa elástica. 
+        - Caminan erráticamente (random walk).
+        - A veces el perro se aleja, a veces se acerca.
+        - Pero la correa (cointegración) asegura que nunca se separen demasiado.
+        """)
+    
+    with st.expander("📉 ¿Qué es el Z-Score?"):
+        st.write("""
+        El Z-Score nos dice **cuántas desviaciones estándar** está el precio actual lejos de su media histórica.
+        - **Z = 0:** El spread está en su precio justo promedio.
+        - **Z = +2:** El spread está "caro" (estadísticamente improbable). Señal de Venta.
+        - **Z = -2:** El spread está "barato". Señal de Compra.
+        """)
+        
+    with st.expander("⏱️ Vida Media (Half-Life)"):
+        st.write("""
+        Es el tiempo esperado para que el spread corrija la mitad de su desviación.
+        - Si Half-Life = 5 días, y entras en una operación, espera mantenerla al menos unas semanas.
+        - Si Half-Life es muy alto (ej. > 60 días), la reversión es tan lenta que quizás no valga la pena operar (costos de swap/intereses).
+        """)
+
+# -----------------------------------------------------------------------------
+# TAB 4: SCANNER AUTOMÁTICO
+# -----------------------------------------------------------------------------
+with tab_scanner:
+    st.header("📡 Radar de Oportunidades")
+    
+    if st.button("Escanear todos los pares seleccionados"):
+        pairs_list = []
+        assets_list = df.columns
+        
+        progress_bar = st.progress(0)
+        combinations = []
+        # Generar combinaciones únicas
+        for i, a1 in enumerate(assets_list):
+            for a2 in assets_list[i+1:]:
+                combinations.append((a1, a2))
+        
+        total_comb = len(combinations)
+        
+        with st.spinner(f"Analizando {total_comb} pares..."):
+            for idx, (a1, a2) in enumerate(combinations):
+                try:
+                    p_a = df[a1]
+                    p_b = df[a2]
+                    
+                    # Tests rápidos
+                    score_corr = p_a.corr(p_b)
+                    if score_corr < 0.5: continue # Filtro rápido
+                    
+                    c_res = coint(p_a, p_b)
+                    if c_res[1] < 0.10: # Pre-filtro cointegración laxa
+                        spr, hr, _, _ = calculate_spread(p_a, p_b)
+                        hl = calculate_half_life(spr)
+                        zs = calculate_zscore(spr).iloc[-1]
+                        hurst_val = calculate_hurst_exponent(spr.dropna().values)
+                        
+                        pairs_list.append({
+                            'Par': f"{ASSETS[a1]['label']} / {ASSETS[a2]['label']}",
+                            'Correlación': score_corr,
+                            'Cointegración (p-val)': c_res[1],
+                            'Z-Score Actual': zs,
+                            'Half-Life (Días)': hl,
+                            'Hurst': hurst_val
+                        })
+                except:
+                    pass
+                progress_bar.progress((idx+1)/total_comb)
+        
+        if pairs_list:
+            res_df = pd.DataFrame(pairs_list)
+            # Ordenar por mejores oportunidades (Z-Score extremo y baja p-value)
+            res_df['Abs Z'] = res_df['Z-Score Actual'].abs()
+            res_df = res_df.sort_values(by=['Cointegración (p-val)', 'Abs Z'], ascending=[True, False])
+            del res_df['Abs Z']
+            
+            st.success(f"Se encontraron {len(res_df)} pares interesantes.")
+            
+            # Formateo de color para la tabla
+            def highlight_rows(val):
+                if val < 0.05: return 'background-color: #1a472a' # Verde oscuro
+                return ''
+
+            st.dataframe(
+                res_df.style.format({
+                    'Correlación': '{:.2f}',
+                    'Cointegración (p-val)': '{:.4f}',
+                    'Z-Score Actual': '{:.2f}',
+                    'Half-Life (Días)': '{:.1f}',
+                    'Hurst': '{:.2f}'
+                }).background_gradient(subset=['Z-Score Actual'], cmap='RdYlGn'),
+                use_container_width=True
+            )
+        else:
+            st.warning("No se encontraron pares con alta correlación en esta selección.")
