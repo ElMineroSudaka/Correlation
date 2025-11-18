@@ -170,8 +170,9 @@ def calculate_spread(prices1, prices2):
     X = sm.add_constant(p2)
     model = sm.OLS(p1, X).fit()
     
-    hedge_ratio = model.params[1]
-    alpha = model.params[0]
+    # FIX: Usar .iloc para acceso posicional seguro
+    hedge_ratio = model.params.iloc[1]
+    alpha = model.params.iloc[0]
     
     # El spread son los residuos del modelo (error)
     spread = p1 - (hedge_ratio * p2) - alpha 
@@ -202,7 +203,8 @@ def calculate_half_life(spread):
     model = sm.OLS(spread_ret, spread_lag2)
     res = model.fit()
     
-    lambda_param = res.params[1]
+    # FIX: Usar .iloc para evitar KeyError si el índice no es numérico
+    lambda_param = res.params.iloc[1]
     
     if lambda_param >= 0:
         return np.inf # No revierte a la media
