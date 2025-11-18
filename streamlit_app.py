@@ -1129,6 +1129,172 @@ def calculate_cophenetic_correlation(corr_matrix):
     
     return c
 
+def find_best_inverse_pairs(df, min_negative_correlation=-0.7, max_correlation=-0.3):
+    """
+    Encuentra pares con fuerte correlación NEGATIVA
+    Útil para hedging y diversificación
+    """
+    assets = df.columns
+    candidates = []
+    
+    for i, asset1 in enumerate(assets):
+        for asset2 in assets[i+1:]:
+            prices1 = df[asset1].dropna()
+            prices2 = df[asset2].dropna()
+            
+            # Índice común
+            common_idx = prices1.index.intersection(prices2.index)
+            if len(common_idx) < 252:  # Mínimo 1 año de datos
+                continue
+            
+            p1 = prices1.loc[common_idx]
+            p2 = prices2.loc[common_idx]
+            
+            # Correlación
+            correlation = p1.corr(p2)
+            
+            # Solo pares con correlación negativa
+            if correlation > max_correlation or correlation < min_negative_correlation:
+                continue
+            
+            # Tests adicionales
+            returns1 = calculate_returns(p1)
+            returns2 = calculate_returns(p2)
+            
+            # Volatilidad
+            vol1 = returns1.std() * np.sqrt(252)
+            vol2 = returns2.std() * np.sqrt(252)
+            vol_ratio = min(vol1, vol2) / max(vol1, vol2)  # Ratio de volatilidades
+            
+            # Estabilidad de correlación
+            rolling_corr = returns1.rolling(60).corr(returns2)
+            corr_std = rolling_corr.std()
+            
+            # Lead-lag
+            lead_lag = calculate_lead_lag_correlation(returns1, returns2, max_lag=5)
+            max_lag_corr = lead_lag['correlation'].abs().max()
+            
+            # Score para correlación inversa
+            score = 0
+            
+            # Correlación fuerte y estable
+            if correlation < -0.7:
+                score += 40
+            elif correlation < -0.5:
+                score += 25
+            else:
+                score += 10
+            
+            # Estabilidad (baja std de correlación)
+            if corr_std < 0.1:
+                score += 30
+            elif corr_std < 0.2:
+                score += 20
+            else:
+                score += 10
+            
+            # Volatilidades similares (mejor para hedging)
+            if vol_ratio > 0.7:
+                score += 20
+            elif vol_ratio > 0.5:
+                score += 10
+            
+            # Lead-lag fuerte
+            if max_lag_corr > 0.5:
+                score += 10
+            
+            candidates.append({
+                'asset1': asset1,
+                'asset2': asset2,
+                'score': score,
+                'correlation': correlation,
+                'corr_stability': corr_std,
+                'vol_ratio': vol_ratio,
+                'vol1': vol1,
+                'vol2': vol2,
+                'max_lag_corr': max_lag_corr
+            })
+    
+    return pd.DataFrame(candidates).sort_values('score', ascending=False)
+
+def calculate_hedge_effectiveness(prices1, prices2, hedge_ratio=1.0):
+    """
+    Calcula la efectividad del hedge entre dos activos
+    Retorna métricas de reducción de volatilidad y riesgo
+    """
+    returns1 = calculate_returns(prices1)
+    returns2 = calculate_returns(prices2)
+    
+    # Portfolio hedgeado
+    hedged_returns = returns1 - hedge_ratio * returns2
+    
+    # Métricas
+    vol_original = returns1.std() * np.sqrt(252)
+    vol_hedged = hedged_returns.std() * np.sqrt(252)
+    vol_reduction = (1 - vol_hedged / vol_original) * 100
+    
+    # Drawdown
+    dd_original = calculate_max_drawdown(prices1).min() * 100
+    
+    # Crear precios sintéticos del portfolio hedgeado
+    hedged_prices = (1 + hedged_returns).cumprod()
+    dd_hedged = calculate_max_drawdown(hedged_prices).min() * 100
+    dd_reduction = (1 - abs(dd_hedged) / abs(dd_original)) * 100
+    
+    # Sharpe ratio
+    sharpe_original = (returns1.mean() * 252) / (returns1.std() * np.sqrt(252))
+    sharpe_hedged = (hedged_returns.mean() * 252) / (hedged_returns.std() * np.sqrt(252))
+    
+    return {
+        'vol_original': vol_original,
+        'vol_hedged': vol_hedged,
+        'vol_reduction_pct': vol_reduction,
+        'dd_original': dd_original,
+        'dd_hedged': dd_hedged,
+        'dd_reduction_pct': dd_reduction,
+        'sharpe_original': sharpe_original,
+        'sharpe_hedged': sharpe_hedged,
+        'hedge_ratio': hedge_ratio
+    }
+
+def calculate_optimal_hedge_ratio_inverse(prices1, prices2):
+    """
+    Calcula el hedge ratio óptimo para correlación inversa
+    Minimiza la volatilidad del portfolio
+    """
+    returns1 = calculate_returns(prices1)
+    returns2 = calculate_returns(prices2)
+    
+    # Método de mínima varianza
+    cov_matrix = np.cov(returns1, returns2)
+    var2 = cov_matrix[1, 1]
+    cov12 = cov_matrix[0, 1]
+    
+    # Hedge ratio óptimo
+    optimal_hr = -cov12 / var2  # Negativo para correlación inversa
+    
+    return optimal_hr
+
+def detect_correlation_regime_inverse(corr_series, threshold=-0.3):
+    """
+    Detecta cuando la correlación se vuelve suficientemente negativa
+    para estrategias de hedging
+    """
+    inverse_regime = corr_series < threshold
+    
+    # Detectar inicio y fin de regímenes
+    regime_changes = inverse_regime.astype(int).diff()
+    regime_starts = regime_changes[regime_changes == 1].index
+    regime_ends = regime_changes[regime_changes == -1].index
+    
+    return {
+        'in_inverse_regime': inverse_regime.iloc[-1],
+        'current_correlation': corr_series.iloc[-1],
+        'regime_starts': regime_starts,
+        'regime_ends': regime_ends,
+        'pct_time_inverse': inverse_regime.sum() / len(inverse_regime) * 100
+    }
+
 def find_best_pairs_comprehensive(df, min_cointegration_pvalue=0.05, 
                                   max_distance=1.0, min_correlation=0.7):
     """
@@ -1730,12 +1896,143 @@ def plot_best_pairs_ranking(pairs_df, top_n=15):
     
     return fig
 
+def plot_inverse_pairs_ranking(pairs_df, top_n=15):
+    """Visualiza ranking de mejores pares con correlación INVERSA"""
+    top_pairs = pairs_df.head(top_n).copy()
+    top_pairs['pair_label'] = top_pairs['asset1'] + ' / ' + top_pairs['asset2']
+    
+    fig = go.Figure()
+    
+    # Color basado en correlación (más rojo = más negativo)
+    colors = ['#ef4444' if corr < -0.7 else '#f97316' if corr < -0.5 else '#fbbf24' 
+              for corr in top_pairs['correlation']]
+    
+    fig.add_trace(go.Bar(
+        y=top_pairs['pair_label'],
+        x=top_pairs['score'],
+        orientation='h',
+        marker=dict(color=colors),
+        text=top_pairs['score'].round(1),
+        textposition='auto',
+        hovertemplate='<b>%{y}</b><br>Score: %{x:.1f}<br>Corr: %{customdata:.3f}<extra></extra>',
+        customdata=top_pairs['correlation']
+    ))
+    
+    fig.update_layout(
+        title=f'Top {top_n} Mejores Pares con Correlación INVERSA (Hedging)',
+        xaxis_title='Score de Calidad',
+        yaxis_title='Par',
+        template='plotly_dark',
+        height=600,
+        yaxis={'categoryorder': 'total ascending'}
+    )
+    
+    return fig
+
+def plot_hedge_effectiveness(prices1, prices2, hedge_ratio, asset1_name, asset2_name):
+    """Visualiza la efectividad del hedge"""
+    returns1 = calculate_returns(prices1)
+    returns2 = calculate_returns(prices2)
+    hedged_returns = returns1 - hedge_ratio * returns2
+    
+    # Crear precios acumulados
+    cumul_original = (1 + returns1).cumprod()
+    cumul_hedged = (1 + hedged_returns).cumprod()
+    
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=(
+            f'Performance: Original vs Hedgeado (HR={hedge_ratio:.3f})',
+            'Rolling Volatility (30 días)'
+        ),
+        vertical_spacing=0.15
+    )
+    
+    # Performance acumulada
+    fig.add_trace(go.Scatter(
+        x=cumul_original.index,
+        y=cumul_original,
+        name=f'{asset1_name} Original',
+        line=dict(color='#3b82f6', width=2)
+    ), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(
+        x=cumul_hedged.index,
+        y=cumul_hedged,
+        name=f'Portfolio Hedgeado',
+        line=dict(color='#10b981', width=2)
+    ), row=1, col=1)
+    
+    # Volatilidad rolling
+    vol_original = returns1.rolling(30).std() * np.sqrt(252) * 100
+    vol_hedged = hedged_returns.rolling(30).std() * np.sqrt(252) * 100
+    
+    fig.add_trace(go.Scatter(
+        x=vol_original.index,
+        y=vol_original,
+        name='Vol Original',
+        line=dict(color='#ef4444', width=2)
+    ), row=2, col=1)
+    
+    fig.add_trace(go.Scatter(
+        x=vol_hedged.index,
+        y=vol_hedged,
+        name='Vol Hedgeada',
+        line=dict(color='#10b981', width=2)
+    ), row=2, col=1)
+    
+    fig.update_layout(
+        height=700,
+        template='plotly_dark',
+        hovermode='x unified'
+    )
+    
+    fig.update_yaxes(title_text="Performance (Base 1)", row=1, col=1)
+    fig.update_yaxes(title_text="Volatilidad Anualizada (%)", row=2, col=1)
+    
+    return fig
+
+def plot_correlation_regime_inverse(corr_series, threshold=-0.3):
+    """Visualiza regímenes de correlación inversa"""
+    fig = go.Figure()
+    
+    # Correlación
+    fig.add_trace(go.Scatter(
+        x=corr_series.index,
+        y=corr_series,
+        mode='lines',
+        name='Correlación',
+        line=dict(color='#3b82f6', width=2)
+    ))
+    
+    # Threshold de régimen inverso
+    fig.add_hline(y=threshold, line_dash="dash", line_color="#ef4444",
+                  annotation_text=f"Threshold Inverso ({threshold})",
+                  annotation_position="right")
+    
+    fig.add_hline(y=0, line_dash="dot", line_color="#666666")
+    
+    # Sombrear área de régimen inverso
+    fig.add_hrect(y0=-1, y1=threshold, fillcolor="#ef4444", opacity=0.1, line_width=0,
+                  annotation_text="Régimen Inverso", annotation_position="top left")
+    
+    fig.update_layout(
+        title='Detección de Regímenes de Correlación Inversa',
+        xaxis_title='Fecha',
+        yaxis_title='Correlación',
+        template='plotly_dark',
+        height=400,
+        yaxis=dict(range=[-1, 1])
+    )
+    
+    return fig
+
 # =============================================================================
 # INTERFAZ PRINCIPAL
 # =============================================================================
 
 st.title("📊 Correlation & Pairs Trading Analyzer Pro")
-st.markdown("🎯 Análisis avanzado de correlaciones y pairs trading | 120+ Activos Globales | Detección automática de pares")
+st.markdown("🎯 Análisis de correlaciones positivas e **inversas** | Pairs Trading & Hedging | 120+ Activos Globales")
 
 # Sidebar - Configuración
 st.sidebar.header("⚙️ Configuración")
@@ -1818,13 +2115,14 @@ st.success(f"✅ Datos cargados: {len(df_prices)} días | {df_prices.index[0].da
 # TABS PRINCIPALES
 # =============================================================================
 
-tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
     "📈 Análisis de Pares Detallado", 
     "🔥 Heatmap & Clustering", 
     "📊 Estadísticas de Correlación",
     "⚡ Métricas de Riesgo",
     "🎯 Pairs Trading Avanzado",
-    "🔍 Búsqueda de Mejores Pares"
+    "🔍 Búsqueda de Mejores Pares",
+    "🛡️ Correlación Inversa & Hedging"
 ])
 
 with tab1:
@@ -2345,131 +2643,240 @@ with tab6:
     st.subheader("🔍 Búsqueda Automática de Mejores Pares")
     st.caption("Identifica automáticamente los mejores pares para trading usando múltiples criterios")
     
+    # Selector de tipo de correlación
+    st.markdown("### 🎯 Tipo de Correlación")
+    
+    correlation_type = st.radio(
+        "Selecciona el tipo de pares a buscar:",
+        ["Correlación Positiva (Pairs Trading)", "Correlación Inversa (Hedging)", "Ambos"],
+        horizontal=True
+    )
+    
     # Configuración de búsqueda
     st.markdown("### ⚙️ Configuración de Búsqueda")
     
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        min_coint_pvalue = st.slider("P-value máximo (cointegración)", 0.01, 0.10, 0.05, 0.01)
-    
-    with col2:
-        min_correlation = st.slider("Correlación mínima", 0.5, 0.95, 0.7, 0.05)
-    
-    with col3:
-        max_distance = st.slider("Distancia máxima", 0.5, 2.0, 1.0, 0.1)
-    
-    if st.button("🔎 Buscar Mejores Pares", type="primary"):
-        with st.spinner("Analizando pares... Esto puede tomar unos minutos..."):
-            best_pairs = find_best_pairs_comprehensive(
-                df_prices[selected_assets],
-                min_cointegration_pvalue=min_coint_pvalue,
-                max_distance=max_distance,
-                min_correlation=min_correlation
-            )
+    if correlation_type == "Correlación Positiva (Pairs Trading)":
+        col1, col2, col3 = st.columns(3)
         
-        if len(best_pairs) > 0:
-            st.success(f"✅ Encontrados {len(best_pairs)} pares que cumplen los criterios")
+        with col1:
+            min_coint_pvalue = st.slider("P-value máximo (cointegración)", 0.01, 0.10, 0.05, 0.01)
+        
+        with col2:
+            min_correlation = st.slider("Correlación mínima", 0.5, 0.95, 0.7, 0.05)
+        
+        with col3:
+            max_distance = st.slider("Distancia máxima", 0.5, 2.0, 1.0, 0.1)
+        
+        if st.button("🔎 Buscar Mejores Pares", type="primary"):
+            with st.spinner("Analizando pares... Esto puede tomar unos minutos..."):
+                best_pairs = find_best_pairs_comprehensive(
+                    df_prices[selected_assets],
+                    min_cointegration_pvalue=min_coint_pvalue,
+                    max_distance=max_distance,
+                    min_correlation=min_correlation
+                )
             
-            # Mostrar gráfico de ranking
-            st.plotly_chart(plot_best_pairs_ranking(best_pairs, top_n=15), use_container_width=True)
+            if len(best_pairs) > 0:
+                st.success(f"✅ Encontrados {len(best_pairs)} pares que cumplen los criterios")
+                
+                # Mostrar gráfico de ranking
+                st.plotly_chart(plot_best_pairs_ranking(best_pairs, top_n=15), use_container_width=True)
+                
+                # Mostrar tabla detallada
+                st.markdown("### 📋 Tabla Detallada de Pares")
+                
+                display_df = best_pairs.head(20).copy()
+                display_df['asset1_name'] = display_df['asset1'].apply(lambda x: ASSETS[x]['label'])
+                display_df['asset2_name'] = display_df['asset2'].apply(lambda x: ASSETS[x]['label'])
+                
+                display_columns = {
+                    'asset1_name': 'Activo 1',
+                    'asset2_name': 'Activo 2',
+                    'score': 'Score',
+                    'correlation': 'Correlación',
+                    'cointegration_pvalue': 'P-value Coint.',
+                    'hurst': 'Hurst Exp.',
+                    'distance': 'Distancia'
+                }
+                
+                display_df = display_df[list(display_columns.keys())].rename(columns=display_columns)
+                
+                # Formatear tabla
+                def highlight_score(val):
+                    if val > 80:
+                        color = '#10b981'
+                    elif val > 60:
+                        color = '#84cc16'
+                    elif val > 40:
+                        color = '#f59e0b'
+                    else:
+                        color = '#ef4444'
+                    return f'background-color: {color}; color: white'
+                
+                styled_table = display_df.style.applymap(
+                    highlight_score, 
+                    subset=['Score']
+                ).format({
+                    'Score': '{:.1f}',
+                    'Correlación': '{:.3f}',
+                    'P-value Coint.': '{:.4f}',
+                    'Hurst Exp.': '{:.3f}',
+                    'Distancia': '{:.2f}'
+                })
+                
+                st.dataframe(styled_table, use_container_width=True)
+                
+                # Análisis del mejor par
+                st.markdown("### 🏆 Análisis del Mejor Par")
+                
+                best_pair = best_pairs.iloc[0]
+                best_asset1 = best_pair['asset1']
+                best_asset2 = best_pair['asset2']
+                
+                st.info(f"**Mejor Par:** {ASSETS[best_asset1]['label']} / {ASSETS[best_asset2]['label']} | Score: {best_pair['score']:.1f}")
+                
+                col1, col2, col3, col4 = st.columns(4)
+                
+                col1.metric("Correlación", f"{best_pair['correlation']:.3f}")
+                col2.metric("Cointegración p-val", f"{best_pair['cointegration_pvalue']:.4f}")
+                col3.metric("Hurst Exponent", f"{best_pair['hurst']:.3f}")
+                col4.metric("Distancia", f"{best_pair['distance']:.2f}")
+                
+                # Gráficos del mejor par
+                prices1_best = df_prices[best_asset1]
+                prices2_best = df_prices[best_asset2]
+                
+                st.plotly_chart(
+                    plot_price_comparison(df_prices, best_asset1, best_asset2,
+                                        ASSETS[best_asset1]['label'],
+                                        ASSETS[best_asset2]['label']),
+                    use_container_width=True
+                )
+                
+                # Spread analysis
+                spread_best, hr_best = calculate_spread(prices1_best, prices2_best)
+                zscore_best = calculate_zscore(spread_best, window=30)
+                
+                st.plotly_chart(
+                    plot_spread_analysis(prices1_best, prices2_best,
+                                       ASSETS[best_asset1]['label'],
+                                       ASSETS[best_asset2]['label']),
+                    use_container_width=True
+                )
+                
+                # Descargar resultados
+                st.markdown("### 📥 Descargar Resultados")
+                csv_pairs = best_pairs.to_csv(index=False)
+                st.download_button(
+                    label="Descargar tabla de pares como CSV",
+                    data=csv_pairs,
+                    file_name="mejores_pares_trading.csv",
+                    mime="text/csv"
+                )
+                
+            else:
+                st.warning("⚠️ No se encontraron pares que cumplan todos los criterios. Intenta relajar los parámetros.")
+    
+    elif correlation_type == "Correlación Inversa (Hedging)":
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            min_neg_corr = st.slider("Correlación mínima (negativa)", -0.95, -0.3, -0.7, 0.05)
+        
+        with col2:
+            max_neg_corr = st.slider("Correlación máxima (negativa)", -0.95, -0.3, -0.3, 0.05)
+        
+        if st.button("🔎 Buscar Pares Inversos", type="primary"):
+            with st.spinner("Buscando pares con correlación inversa..."):
+                inverse_pairs = find_best_inverse_pairs(
+                    df_prices[selected_assets],
+                    min_negative_correlation=min_neg_corr,
+                    max_correlation=max_neg_corr
+                )
             
-            # Mostrar tabla detallada
-            st.markdown("### 📋 Tabla Detallada de Pares")
+            if len(inverse_pairs) > 0:
+                st.success(f"✅ Encontrados {len(inverse_pairs)} pares con correlación inversa")
+                
+                # Gráfico de ranking
+                st.plotly_chart(plot_inverse_pairs_ranking(inverse_pairs, top_n=15), use_container_width=True)
+                
+                # Tabla detallada (similar al código en tab7)
+                st.markdown("### 📋 Tabla Detallada de Pares Inversos")
+                
+                display_df = inverse_pairs.head(20).copy()
+                display_df['asset1_name'] = display_df['asset1'].apply(lambda x: ASSETS[x]['label'])
+                display_df['asset2_name'] = display_df['asset2'].apply(lambda x: ASSETS[x]['label'])
+                
+                st.dataframe(display_df[['asset1_name', 'asset2_name', 'score', 'correlation', 
+                                        'corr_stability', 'vol_ratio']], use_container_width=True)
+                
+                # Descargar
+                csv_inverse = inverse_pairs.to_csv(index=False)
+                st.download_button(
+                    label="Descargar pares inversos como CSV",
+                    data=csv_inverse,
+                    file_name="pares_correlacion_inversa.csv",
+                    mime="text/csv"
+                )
+            else:
+                st.warning("⚠️ No se encontraron pares inversos en el rango especificado.")
+    
+    else:  # Ambos
+        st.info("🔄 Buscando tanto pares con correlación positiva como inversa...")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("**Correlación Positiva**")
+            min_corr_pos = st.slider("Mín. correlación positiva", 0.5, 0.95, 0.7, 0.05, key='pos_min')
+        
+        with col2:
+            st.markdown("**Correlación Inversa**")
+            max_corr_neg = st.slider("Máx. correlación negativa", -0.95, -0.3, -0.5, 0.05, key='neg_max')
+        
+        if st.button("🔎 Buscar Ambos Tipos de Pares", type="primary"):
+            with st.spinner("Analizando todos los pares..."):
+                # Buscar pares positivos
+                best_pairs_pos = find_best_pairs_comprehensive(
+                    df_prices[selected_assets],
+                    min_cointegration_pvalue=0.05,
+                    max_distance=1.0,
+                    min_correlation=min_corr_pos
+                )
+                
+                # Buscar pares inversos
+                inverse_pairs = find_best_inverse_pairs(
+                    df_prices[selected_assets],
+                    min_negative_correlation=-0.95,
+                    max_correlation=max_corr_neg
+                )
             
-            display_df = best_pairs.head(20).copy()
-            display_df['asset1_name'] = display_df['asset1'].apply(lambda x: ASSETS[x]['label'])
-            display_df['asset2_name'] = display_df['asset2'].apply(lambda x: ASSETS[x]['label'])
+            col1, col2 = st.columns(2)
             
-            display_columns = {
-                'asset1_name': 'Activo 1',
-                'asset2_name': 'Activo 2',
-                'score': 'Score',
-                'correlation': 'Correlación',
-                'cointegration_pvalue': 'P-value Coint.',
-                'hurst': 'Hurst Exp.',
-                'distance': 'Distancia'
-            }
-            
-            display_df = display_df[list(display_columns.keys())].rename(columns=display_columns)
-            
-            # Formatear tabla
-            def highlight_score(val):
-                if val > 80:
-                    color = '#10b981'
-                elif val > 60:
-                    color = '#84cc16'
-                elif val > 40:
-                    color = '#f59e0b'
+            with col1:
+                st.markdown("### 📈 Pares Correlación Positiva")
+                if len(best_pairs_pos) > 0:
+                    st.success(f"✅ {len(best_pairs_pos)} pares encontrados")
+                    top_pos = best_pairs_pos.head(10).copy()
+                    top_pos['Pair'] = top_pos['asset1'].apply(lambda x: ASSETS[x]['label']) + ' / ' + \
+                                      top_pos['asset2'].apply(lambda x: ASSETS[x]['label'])
+                    st.dataframe(top_pos[['Pair', 'score', 'correlation']], use_container_width=True)
                 else:
-                    color = '#ef4444'
-                return f'background-color: {color}; color: white'
+                    st.warning("No encontrados")
             
-            styled_table = display_df.style.applymap(
-                highlight_score, 
-                subset=['Score']
-            ).format({
-                'Score': '{:.1f}',
-                'Correlación': '{:.3f}',
-                'P-value Coint.': '{:.4f}',
-                'Hurst Exp.': '{:.3f}',
-                'Distancia': '{:.2f}'
-            })
-            
-            st.dataframe(styled_table, use_container_width=True)
-            
-            # Análisis del mejor par
-            st.markdown("### 🏆 Análisis del Mejor Par")
-            
-            best_pair = best_pairs.iloc[0]
-            best_asset1 = best_pair['asset1']
-            best_asset2 = best_pair['asset2']
-            
-            st.info(f"**Mejor Par:** {ASSETS[best_asset1]['label']} / {ASSETS[best_asset2]['label']} | Score: {best_pair['score']:.1f}")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            col1.metric("Correlación", f"{best_pair['correlation']:.3f}")
-            col2.metric("Cointegración p-val", f"{best_pair['cointegration_pvalue']:.4f}")
-            col3.metric("Hurst Exponent", f"{best_pair['hurst']:.3f}")
-            col4.metric("Distancia", f"{best_pair['distance']:.2f}")
-            
-            # Gráficos del mejor par
-            prices1_best = df_prices[best_asset1]
-            prices2_best = df_prices[best_asset2]
-            
-            st.plotly_chart(
-                plot_price_comparison(df_prices, best_asset1, best_asset2,
-                                    ASSETS[best_asset1]['label'],
-                                    ASSETS[best_asset2]['label']),
-                use_container_width=True
-            )
-            
-            # Spread analysis
-            spread_best, hr_best = calculate_spread(prices1_best, prices2_best)
-            zscore_best = calculate_zscore(spread_best, window=30)
-            
-            st.plotly_chart(
-                plot_spread_analysis(prices1_best, prices2_best,
-                                   ASSETS[best_asset1]['label'],
-                                   ASSETS[best_asset2]['label']),
-                use_container_width=True
-            )
-            
-            # Descargar resultados
-            st.markdown("### 📥 Descargar Resultados")
-            csv_pairs = best_pairs.to_csv(index=False)
-            st.download_button(
-                label="Descargar tabla de pares como CSV",
-                data=csv_pairs,
-                file_name="mejores_pares_trading.csv",
-                mime="text/csv"
-            )
-            
-        else:
-            st.warning("⚠️ No se encontraron pares que cumplan todos los criterios. Intenta relajar los parámetros.")
+            with col2:
+                st.markdown("### 🛡️ Pares Correlación Inversa")
+                if len(inverse_pairs) > 0:
+                    st.success(f"✅ {len(inverse_pairs)} pares encontrados")
+                    top_inv = inverse_pairs.head(10).copy()
+                    top_inv['Pair'] = top_inv['asset1'].apply(lambda x: ASSETS[x]['label']) + ' / ' + \
+                                      top_inv['asset2'].apply(lambda x: ASSETS[x]['label'])
+                    st.dataframe(top_inv[['Pair', 'score', 'correlation']], use_container_width=True)
+                else:
+                    st.warning("No encontrados")
     
     # Análisis de distancias entre todos los pares
+    st.markdown("---")
     st.markdown("### 📊 Análisis de Distancias")
     st.caption("Pares más similares por distancia euclidiana")
     
@@ -2490,15 +2897,306 @@ with tab6:
             
             st.dataframe(display_dist, use_container_width=True)
 
+with tab7:
+    st.subheader("🛡️ Análisis de Correlación Inversa & Hedging")
+    st.caption("Identifica pares con correlación negativa fuerte para estrategias de cobertura y diversificación")
+    
+    # Búsqueda de pares inversos
+    st.markdown("### 🔍 Búsqueda de Pares con Correlación Inversa")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        min_neg_corr = st.slider("Correlación mínima (negativa)", -0.95, -0.3, -0.7, 0.05)
+    
+    with col2:
+        max_neg_corr = st.slider("Correlación máxima (negativa)", -0.95, -0.3, -0.3, 0.05)
+    
+    if st.button("🔎 Buscar Pares Inversos", type="primary"):
+        with st.spinner("Buscando pares con correlación inversa..."):
+            inverse_pairs = find_best_inverse_pairs(
+                df_prices[selected_assets],
+                min_negative_correlation=min_neg_corr,
+                max_correlation=max_neg_corr
+            )
+        
+        if len(inverse_pairs) > 0:
+            st.success(f"✅ Encontrados {len(inverse_pairs)} pares con correlación inversa")
+            
+            # Gráfico de ranking
+            st.plotly_chart(plot_inverse_pairs_ranking(inverse_pairs, top_n=15), use_container_width=True)
+            
+            # Tabla detallada
+            st.markdown("### 📋 Tabla Detallada de Pares Inversos")
+            
+            display_df = inverse_pairs.head(20).copy()
+            display_df['asset1_name'] = display_df['asset1'].apply(lambda x: ASSETS[x]['label'])
+            display_df['asset2_name'] = display_df['asset2'].apply(lambda x: ASSETS[x]['label'])
+            
+            display_columns = {
+                'asset1_name': 'Activo 1',
+                'asset2_name': 'Activo 2',
+                'score': 'Score',
+                'correlation': 'Correlación',
+                'corr_stability': 'Estabilidad',
+                'vol_ratio': 'Ratio Vol',
+                'vol1': 'Vol 1',
+                'vol2': 'Vol 2',
+                'max_lag_corr': 'Max Lag Corr'
+            }
+            
+            display_df = display_df[list(display_columns.keys())].rename(columns=display_columns)
+            
+            styled_table = display_df.style.format({
+                'Score': '{:.1f}',
+                'Correlación': '{:.3f}',
+                'Estabilidad': '{:.3f}',
+                'Ratio Vol': '{:.2f}',
+                'Vol 1': '{:.2%}',
+                'Vol 2': '{:.2%}',
+                'Max Lag Corr': '{:.3f}'
+            })
+            
+            st.dataframe(styled_table, use_container_width=True)
+            
+            # Análisis del mejor par inverso
+            st.markdown("### 🏆 Análisis del Mejor Par Inverso")
+            
+            best_inverse = inverse_pairs.iloc[0]
+            inv_asset1 = best_inverse['asset1']
+            inv_asset2 = best_inverse['asset2']
+            
+            st.info(f"**Mejor Par Inverso:** {ASSETS[inv_asset1]['label']} / {ASSETS[inv_asset2]['label']} | Score: {best_inverse['score']:.1f}")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            col1.metric("Correlación", f"{best_inverse['correlation']:.3f}")
+            col2.metric("Estabilidad", f"{best_inverse['corr_stability']:.3f}")
+            col3.metric("Ratio Volatilidad", f"{best_inverse['vol_ratio']:.2f}")
+            col4.metric("Max Lag Corr", f"{best_inverse['max_lag_corr']:.3f}")
+            
+            # Análisis de hedging
+            st.markdown("### 🛡️ Análisis de Efectividad del Hedge")
+            
+            prices_inv1 = df_prices[inv_asset1]
+            prices_inv2 = df_prices[inv_asset2]
+            
+            # Calcular hedge ratio óptimo
+            optimal_hr = calculate_optimal_hedge_ratio_inverse(prices_inv1, prices_inv2)
+            
+            # Calcular efectividad con diferentes hedge ratios
+            hr_test = [0.5, 0.75, 1.0, optimal_hr, 1.5]
+            
+            st.markdown(f"**Hedge Ratio Óptimo:** {optimal_hr:.3f}")
+            st.caption("El hedge ratio óptimo minimiza la volatilidad del portfolio hedgeado")
+            
+            # Comparar diferentes hedge ratios
+            st.markdown("#### Comparación de Hedge Ratios")
+            
+            hedge_results = []
+            for hr in hr_test:
+                result = calculate_hedge_effectiveness(prices_inv1, prices_inv2, hr)
+                hedge_results.append({
+                    'Hedge Ratio': hr,
+                    'Vol Reduction %': result['vol_reduction_pct'],
+                    'DD Reduction %': result['dd_reduction_pct'],
+                    'Sharpe Hedged': result['sharpe_hedged']
+                })
+            
+            hedge_df = pd.DataFrame(hedge_results)
+            st.dataframe(hedge_df.style.format({
+                'Hedge Ratio': '{:.3f}',
+                'Vol Reduction %': '{:.1f}%',
+                'DD Reduction %': '{:.1f}%',
+                'Sharpe Hedged': '{:.3f}'
+            }).background_gradient(subset=['Vol Reduction %', 'DD Reduction %'], cmap='RdYlGn'), 
+            use_container_width=True)
+            
+            # Visualización de efectividad del hedge
+            st.markdown("#### Visualización del Hedge")
+            
+            st.plotly_chart(
+                plot_hedge_effectiveness(prices_inv1, prices_inv2, optimal_hr,
+                                        ASSETS[inv_asset1]['label'],
+                                        ASSETS[inv_asset2]['label']),
+                use_container_width=True
+            )
+            
+            # Métricas detalladas del hedge óptimo
+            hedge_metrics = calculate_hedge_effectiveness(prices_inv1, prices_inv2, optimal_hr)
+            
+            st.markdown("#### 📊 Métricas Detalladas del Hedge Óptimo")
+            
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric("Volatilidad Original", f"{hedge_metrics['vol_original']:.2%}")
+                st.metric("Volatilidad Hedgeada", f"{hedge_metrics['vol_hedged']:.2%}")
+                st.metric("Reducción de Vol", f"{hedge_metrics['vol_reduction_pct']:.1f}%",
+                         delta=f"{hedge_metrics['vol_reduction_pct']:.1f}%")
+            
+            with col2:
+                st.metric("Drawdown Original", f"{hedge_metrics['dd_original']:.2f}%")
+                st.metric("Drawdown Hedgeado", f"{hedge_metrics['dd_hedged']:.2f}%")
+                st.metric("Reducción de DD", f"{hedge_metrics['dd_reduction_pct']:.1f}%",
+                         delta=f"{hedge_metrics['dd_reduction_pct']:.1f}%")
+            
+            with col3:
+                st.metric("Sharpe Original", f"{hedge_metrics['sharpe_original']:.3f}")
+                st.metric("Sharpe Hedgeado", f"{hedge_metrics['sharpe_hedged']:.3f}")
+                sharpe_change = hedge_metrics['sharpe_hedged'] - hedge_metrics['sharpe_original']
+                st.metric("Cambio Sharpe", f"{sharpe_change:+.3f}",
+                         delta=f"{sharpe_change:+.3f}")
+            
+            # Interpretación
+            if hedge_metrics['vol_reduction_pct'] > 30:
+                st.success(f"✅ Excelente hedge: reduce volatilidad en {hedge_metrics['vol_reduction_pct']:.1f}%")
+            elif hedge_metrics['vol_reduction_pct'] > 15:
+                st.info(f"✓ Buen hedge: reduce volatilidad en {hedge_metrics['vol_reduction_pct']:.1f}%")
+            else:
+                st.warning(f"⚠️ Hedge moderado: reduce volatilidad en {hedge_metrics['vol_reduction_pct']:.1f}%")
+            
+            # Detección de regímenes inversos
+            st.markdown("### 📈 Detección de Regímenes de Correlación Inversa")
+            
+            returns_inv1 = calculate_returns(prices_inv1)
+            returns_inv2 = calculate_returns(prices_inv2)
+            rolling_corr_inv = returns_inv1.rolling(60).corr(returns_inv2)
+            
+            regime_info = detect_correlation_regime_inverse(rolling_corr_inv, threshold=-0.3)
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                status = "✅ SÍ" if regime_info['in_inverse_regime'] else "❌ NO"
+                st.metric("En Régimen Inverso Actual", status)
+                st.caption("Correlación < -0.3")
+            
+            with col2:
+                st.metric("% Tiempo en Régimen Inverso", f"{regime_info['pct_time_inverse']:.1f}%")
+                st.metric("Correlación Actual", f"{regime_info['current_correlation']:.3f}")
+            
+            # Gráfico de regímenes
+            st.plotly_chart(
+                plot_correlation_regime_inverse(rolling_corr_inv, threshold=-0.3),
+                use_container_width=True
+            )
+            
+            # Estrategia de trading para correlación inversa
+            st.markdown("### 💡 Estrategia Sugerida")
+            
+            if regime_info['in_inverse_regime']:
+                st.success(f"""
+                **✅ Estrategia de Hedging Activa**
+                
+                La correlación actual ({regime_info['current_correlation']:.3f}) indica un buen momento para implementar un hedge:
+                
+                1. **Posición Long**: {ASSETS[inv_asset1]['label']}
+                2. **Posición Short**: {ASSETS[inv_asset2]['label']} con ratio {optimal_hr:.3f}
+                3. **Objetivo**: Reducir volatilidad del portfolio en ~{hedge_metrics['vol_reduction_pct']:.0f}%
+                4. **Beneficio**: Protección contra caídas con correlación inversa estable
+                """)
+            else:
+                st.info(f"""
+                **⚪ Monitorear Correlación**
+                
+                La correlación actual ({regime_info['current_correlation']:.3f}) no está en régimen inverso fuerte.
+                
+                - Esperar a que la correlación caiga por debajo de -0.3
+                - Monitorear estabilidad de la correlación
+                - Considerar otros pares con mejor correlación inversa
+                """)
+            
+            # Descarga de resultados
+            st.markdown("### 📥 Descargar Resultados")
+            csv_inverse = inverse_pairs.to_csv(index=False)
+            st.download_button(
+                label="Descargar pares inversos como CSV",
+                data=csv_inverse,
+                file_name="pares_correlacion_inversa.csv",
+                mime="text/csv"
+            )
+            
+        else:
+            st.warning("⚠️ No se encontraron pares con correlación inversa en el rango especificado.")
+    
+    # Análisis individual de par inverso
+    st.markdown("---")
+    st.markdown("### 🔬 Análisis Individual de Par Inverso")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        inv_manual_asset1 = st.selectbox(
+            "Activo 1 (para hedging)",
+            options=selected_assets,
+            format_func=lambda x: ASSETS[x]['label'],
+            key='inv_manual_1'
+        )
+    
+    with col2:
+        inv_manual_asset2 = st.selectbox(
+            "Activo 2 (hedge)",
+            options=[a for a in selected_assets if a != inv_manual_asset1],
+            format_func=lambda x: ASSETS[x]['label'],
+            key='inv_manual_2'
+        )
+    
+    # Análisis del par seleccionado manualmente
+    prices_m1 = df_prices[inv_manual_asset1]
+    prices_m2 = df_prices[inv_manual_asset2]
+    
+    corr_manual = prices_m1.corr(prices_m2)
+    
+    col1, col2, col3 = st.columns(3)
+    
+    col1.metric("Correlación", f"{corr_manual:.3f}")
+    
+    if corr_manual < -0.5:
+        col2.metric("Tipo", "🛡️ Hedge Fuerte")
+        col3.metric("Recomendación", "✅ Bueno para hedging")
+    elif corr_manual < -0.3:
+        col2.metric("Tipo", "🛡️ Hedge Moderado")
+        col3.metric("Recomendación", "⚠️ Considerar")
+    else:
+        col2.metric("Tipo", "❌ No Inverso")
+        col3.metric("Recomendación", "❌ No recomendado")
+    
+    # Calcular y mostrar hedge ratio óptimo
+    if corr_manual < -0.2:
+        optimal_hr_manual = calculate_optimal_hedge_ratio_inverse(prices_m1, prices_m2)
+        st.info(f"**Hedge Ratio Óptimo:** {optimal_hr_manual:.4f}")
+        
+        # Efectividad del hedge
+        hedge_manual = calculate_hedge_effectiveness(prices_m1, prices_m2, optimal_hr_manual)
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Reducción Volatilidad", f"{hedge_manual['vol_reduction_pct']:.1f}%")
+        col2.metric("Reducción Drawdown", f"{hedge_manual['dd_reduction_pct']:.1f}%")
+        col3.metric("Sharpe Hedgeado", f"{hedge_manual['sharpe_hedged']:.3f}")
+
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 Guía de Métricas")
 st.sidebar.markdown("""
 **Correlaciones:**
-- > 0.7: Muy fuerte
-- 0.5-0.7: Fuerte  
+- > 0.7: Muy fuerte positiva
+- 0.5-0.7: Fuerte positiva 
 - 0.3-0.5: Moderada
-- < 0.3: Débil
+- -0.3 a 0.3: Débil/Neutral
+- -0.5 a -0.3: Moderada negativa
+- < -0.5: Fuerte INVERSA ⚡
+- < -0.7: Muy fuerte INVERSA 🛡️
+
+**Correlación Inversa:**
+- Ideal para hedging y diversificación
+- Reduce volatilidad del portfolio
+- Protección en caídas de mercado
+
+**Hedge Ratio:**
+- Óptimo: minimiza volatilidad
+- > 1: más cobertura
+- < 1: cobertura parcial
 
 **Cointegración:**
 - P-value < 0.05: Cointegrados
@@ -2523,4 +3221,12 @@ st.sidebar.markdown("""
 st.sidebar.markdown("---")
 st.sidebar.info(f"💡 {len(ASSETS)} activos disponibles | Delay: {download_delay}s entre descargas")
 st.sidebar.markdown("---")
-st.sidebar.success("✨ Versión enfocada en Correlaciones & Pairs Trading")
+st.sidebar.success("✨ Correlación Positiva & Inversa | Pairs Trading & Hedging")
+st.sidebar.markdown("""
+**Nuevas Funciones:**
+- 🛡️ Búsqueda de pares inversos
+- 📊 Análisis de efectividad de hedge
+- 🎯 Hedge ratio óptimo
+- 📈 Detección de regímenes inversos
+- 💰 Reducción de volatilidad/drawdown
+""")
