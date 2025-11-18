@@ -387,7 +387,7 @@ with tab_analysis:
     fig_norm.add_trace(go.Scatter(x=p1.index, y=(p1/p1.iloc[0])*100, name=ASSETS[asset1]['label']))
     fig_norm.add_trace(go.Scatter(x=p2.index, y=(p2/p2.iloc[0])*100, name=ASSETS[asset2]['label']))
     fig_norm.update_layout(template="plotly_dark", height=400)
-    st.plotly_chart(fig_norm, use_container_width=True)
+    st.plotly_chart(fig_norm, width="stretch")
     
     # 2. Scatter Plot (Regresión)
     st.subheader("2. Análisis de Regresión Lineal")
@@ -403,7 +403,7 @@ with tab_analysis:
     line_y = alpha + hedge_ratio * line_x
     fig_scatter.add_trace(go.Scatter(x=line_x, y=line_y, mode='lines', name='Regresión (Hedge Ratio)', line=dict(color='red')))
     fig_scatter.update_layout(template="plotly_dark", height=500)
-    st.plotly_chart(fig_scatter, use_container_width=True)
+    st.plotly_chart(fig_scatter, width="stretch")
 
     # 3. Spread y Z-Score
     st.subheader("3. Señales de Trading (Spread & Z-Score)")
@@ -429,7 +429,7 @@ with tab_analysis:
     fig_z.add_trace(go.Scatter(x=sell_signals.index, y=sell_signals, mode='markers', marker=dict(color='red', size=8), name='Señal Venta'), row=2, col=1)
 
     fig_z.update_layout(template="plotly_dark", height=700)
-    st.plotly_chart(fig_z, use_container_width=True)
+    st.plotly_chart(fig_z, width="stretch")
 
 # -----------------------------------------------------------------------------
 # TAB 2: BACKTEST
@@ -460,13 +460,14 @@ with tab_backtest:
         fig_pnl = go.Figure()
         fig_pnl.add_trace(go.Scatter(x=cum_pnl.index, y=cum_pnl, fill='tozeroy', mode='lines', name='PnL Acumulado'))
         fig_pnl.update_layout(title="Curva de Equity (Teórica)", template="plotly_dark", height=400)
-        st.plotly_chart(fig_pnl, use_container_width=True)
+        st.plotly_chart(fig_pnl, width="stretch")
         
         # Gráfico Posiciones
         fig_pos = go.Figure()
-        fig_pos.add_trace(go.Scatter(x=signals.index, y=signals, mode='steps', name='Posición (-1, 0, 1)'))
+        # FIX: mode='lines' y shape='hv' para efecto escalón, 'steps' no es válido
+        fig_pos.add_trace(go.Scatter(x=signals.index, y=signals, mode='lines', line=dict(shape='hv'), name='Posición (-1, 0, 1)'))
         fig_pos.update_layout(title="Posiciones en el Mercado", yaxis=dict(tickvals=[-1, 0, 1], ticktext=['Short Spread', 'Flat', 'Long Spread']), template="plotly_dark", height=300)
-        st.plotly_chart(fig_pos, use_container_width=True)
+        st.plotly_chart(fig_pos, width="stretch")
 
 # -----------------------------------------------------------------------------
 # TAB 3: EDUCACIÓN
