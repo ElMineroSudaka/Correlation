@@ -808,29 +808,36 @@ def calculate_expectancy(returns):
     expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
     return expectancy * 100
 
-def calculate_mae_mfe(prices, trades_df=None):
+def calculate_mae_mfe(prices, window=252):
     """
     Maximum Adverse Excursion (MAE) y Maximum Favorable Excursion (MFE)
     Útil para optimizar stops y targets
+    Calcula la máxima excursión adversa y favorable en una ventana rolling
     """
     returns = calculate_returns(prices)
     cumulative = (1 + returns).cumprod()
     
-    # Calcular excursiones desde cada punto
+    # Calcular excursiones rolling
     mae_series = []
     mfe_series = []
     
     for i in range(len(cumulative)):
-        if i == 0:
-            mae_series.append(0)
-            mfe_series.append(0)
+        if i < window:
+            mae_series.append(np.nan)
+            mfe_series.append(np.nan)
             continue
         
-        future_prices = cumulative[i:]
-        entry_price = cumulative.iloc[i]
+        # Mirar hacia atrás en la ventana
+        window_prices = cumulative.iloc[i-window:i+1]
+        entry_price = cumulative.iloc[i-window]
         
-        mae = ((future_prices.min() - entry_price) / entry_price) * 100
-        mfe = ((future_prices.max() - entry_price) / entry_price) * 100
+        if entry_price == 0 or pd.isna(entry_price):
+            mae_series.append(np.nan)
+            mfe_series.append(np.nan)
+            continue
+        
+        mae = ((window_prices.min() - entry_price) / entry_price) * 100
+        mfe = ((window_prices.max() - entry_price) / entry_price) * 100
         
         mae_series.append(mae)
         mfe_series.append(mfe)
@@ -838,7 +845,7 @@ def calculate_mae_mfe(prices, trades_df=None):
     return pd.DataFrame({
         'MAE': mae_series,
         'MFE': mfe_series
-    }, index=prices.index)
+    }, index=cumulative.index)
 
 def calculate_information_coefficient(predictions, actual_returns):
     """
