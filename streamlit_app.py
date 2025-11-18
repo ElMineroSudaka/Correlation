@@ -1215,6 +1215,11 @@ def find_best_inverse_pairs(df, min_negative_correlation=-0.7, max_correlation=-
                 'max_lag_corr': max_lag_corr
             })
     
+    # Manejar caso cuando no hay candidatos
+    if len(candidates) == 0:
+        return pd.DataFrame(columns=['asset1', 'asset2', 'score', 'correlation', 
+                                    'corr_stability', 'vol_ratio', 'vol1', 'vol2', 'max_lag_corr'])
+    
     return pd.DataFrame(candidates).sort_values('score', ascending=False)
 
 def calculate_hedge_effectiveness(prices1, prices2, hedge_ratio=1.0):
@@ -1351,6 +1356,11 @@ def find_best_pairs_comprehensive(df, min_cointegration_pvalue=0.05,
                 'hurst': hurst,
                 'distance': distance
             })
+    
+    # Manejar caso cuando no hay candidatos
+    if len(candidates) == 0:
+        return pd.DataFrame(columns=['asset1', 'asset2', 'score', 'correlation', 
+                                    'cointegration_pvalue', 'hurst', 'distance'])
     
     return pd.DataFrame(candidates).sort_values('score', ascending=False)
 
