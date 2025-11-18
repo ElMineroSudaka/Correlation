@@ -636,40 +636,240 @@ def calculate_hurst_exponent(series, max_lag=100):
     except:
         return np.nan
 
-def calculate_rsi(prices, window=14):
-    """Calcula Relative Strength Index"""
-    delta = prices.diff()
-    gain = (delta.where(delta > 0, 0)).rolling(window=window).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(window=window).mean()
-    rs = gain / loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi
-
-def calculate_macd(prices, fast=12, slow=26, signal=9):
-    """Calcula MACD"""
-    ema_fast = prices.ewm(span=fast).mean()
-    ema_slow = prices.ewm(span=slow).mean()
-    macd = ema_fast - ema_slow
-    signal_line = macd.ewm(span=signal).mean()
-    histogram = macd - signal_line
+def calculate_lead_lag_correlation(series1, series2, max_lag=10):
+    """
+    Calcula correlación con diferentes lags (retrasos)
+    Útil para detectar relaciones de liderazgo entre activos
+    """
+    correlations = []
+    lags = range(-max_lag, max_lag + 1)
+    
+    for lag in lags:
+        if lag < 0:
+            # series2 lidera a series1
+            corr = series1.iloc[-lag:].corr(series2.iloc[:lag])
+        elif lag > 0:
+            # series1 lidera a series2
+            corr = series1.iloc[:-lag].corr(series2.iloc[lag:])
+        else:
+            # Sin lag
+            corr = series1.corr(series2)
+        
+        correlations.append(corr)
+    
     return pd.DataFrame({
-        'macd': macd,
-        'signal': signal_line,
-        'histogram': histogram
+        'lag': lags,
+        'correlation': correlations
     })
 
-def calculate_bollinger_bands(prices, window=20, num_std=2):
-    """Calcula Bollinger Bands"""
-    sma = prices.rolling(window).mean()
-    std = prices.rolling(window).std()
-    upper = sma + (std * num_std)
-    lower = sma - (std * num_std)
+def calculate_rolling_correlation_multi_window(df, asset1, asset2, windows=[10, 30, 60, 120]):
+    """
+    Calcula correlación rolling con múltiples ventanas
+    Útil para ver diferentes timeframes simultáneamente
+    """
+    returns1 = calculate_returns(df[asset1])
+    returns2 = calculate_returns(df[asset2])
+    
+    result = pd.DataFrame(index=df.index)
+    
+    for window in windows:
+        corr = returns1.rolling(window).corr(returns2)
+        result[f'corr_{window}d'] = corr
+    
+    return result
+
+def calculate_correlation_stability(corr_series, window=60):
+    """
+    Mide la estabilidad de la correlación
+    Una baja desviación estándar indica correlación estable
+    """
+    rolling_std = corr_series.rolling(window).std()
+    rolling_mean = corr_series.rolling(window).mean()
+    
+    # Coefficient of variation
+    cv = (rolling_std / rolling_mean.abs()).replace([np.inf, -np.inf], np.nan)
+    
     return pd.DataFrame({
-        'upper': upper,
-        'middle': sma,
-        'lower': lower,
-        'bandwidth': (upper - lower) / sma
+        'corr_std': rolling_std,
+        'corr_mean': rolling_mean,
+        'stability_cv': cv
     })
+
+def find_correlation_breakpoints(corr_series, threshold=0.3):
+    """
+    Detecta puntos donde la correlación cambia significativamente
+    Identifica cambios de régimen
+    """
+    corr_diff = corr_series.diff().abs()
+    breakpoints = corr_diff[corr_diff > threshold]
+    
+    return breakpoints
+
+def calculate_optimal_hedge_ratio_methods(prices1, prices2):
+    """
+    Calcula hedge ratio con múltiples métodos:
+    - OLS (Ordinary Least Squares)
+    - TLS (Total Least Squares)
+    - Variance Minimization
+    """
+    prices1_clean = prices1.dropna()
+    prices2_clean = prices2.dropna()
+    
+    common_idx = prices1_clean.index.intersection(prices2_clean.index)
+    p1 = prices1_clean.loc[common_idx]
+    p2 = prices2_clean.loc[common_idx]
+    
+    # OLS
+    ols_hr = np.polyfit(p2, p1, 1)[0]
+    
+    # Variance Minimization
+    returns1 = np.diff(np.log(p1))
+    returns2 = np.diff(np.log(p2))
+    var_hr = np.cov(returns1, returns2)[0, 1] / np.var(returns2)
+    
+    # Correlation-based
+    corr_hr = np.std(p1) / np.std(p2) * np.corrcoef(p1, p2)[0, 1]
+    
+    return {
+        'ols': ols_hr,
+        'variance_min': var_hr,
+        'correlation': corr_hr
+    }
+
+def calculate_ou_parameters(spread):
+    """
+    Estima parámetros del proceso Ornstein-Uhlenbeck
+    - theta: velocidad de reversión a la media
+    - mu: nivel de equilibrio
+    - sigma: volatilidad
+    """
+    spread_clean = spread.dropna()
+    
+    if len(spread_clean) < 2:
+        return {'theta': np.nan, 'mu': np.nan, 'sigma': np.nan, 'half_life': np.nan}
+    
+    spread_lag = spread_clean.shift(1).dropna()
+    spread_diff = spread_clean.diff().dropna()
+    
+    # Alinear índices
+    common_idx = spread_lag.index.intersection(spread_diff.index)
+    spread_lag = spread_lag.loc[common_idx]
+    spread_diff = spread_diff.loc[common_idx]
+    
+    # Regresión: ds = theta * (mu - s) * dt + sigma * dW
+    # Simplificado: ds = a + b*s
+    if len(spread_lag) < 2:
+        return {'theta': np.nan, 'mu': np.nan, 'sigma': np.nan, 'half_life': np.nan}
+    
+    coeffs = np.polyfit(spread_lag, spread_diff, 1)
+    theta = -coeffs[0]
+    mu = -coeffs[1] / coeffs[0] if coeffs[0] != 0 else np.nan
+    sigma = np.std(spread_diff)
+    half_life = np.log(2) / theta if theta > 0 else np.nan
+    
+    return {
+        'theta': theta,
+        'mu': mu,
+        'sigma': sigma,
+        'half_life': half_life
+    }
+
+def calculate_cointegration_strength(prices1, prices2, window=252):
+    """
+    Mide la fuerza de la cointegración en rolling window
+    """
+    coint_scores = []
+    dates = []
+    
+    for i in range(window, len(prices1)):
+        p1_window = prices1.iloc[i-window:i]
+        p2_window = prices2.iloc[i-window:i]
+        
+        try:
+            score, pvalue, _ = coint(p1_window, p2_window)
+            coint_scores.append(-score)  # Más negativo = más cointegrado
+            dates.append(prices1.index[i])
+        except:
+            coint_scores.append(np.nan)
+            dates.append(prices1.index[i])
+    
+    return pd.Series(coint_scores, index=dates)
+
+def detect_pairs_by_distance(df, method='euclidean', top_n=10):
+    """
+    Encuentra los mejores pares basándose en distancia
+    Retorna los N pares más cercanos
+    """
+    assets = df.columns
+    distances = []
+    
+    for i, asset1 in enumerate(assets):
+        for asset2 in assets[i+1:]:
+            dist = calculate_distance_correlation(df[asset1], df[asset2], method)
+            distances.append({
+                'asset1': asset1,
+                'asset2': asset2,
+                'distance': dist
+            })
+    
+    distances_df = pd.DataFrame(distances).sort_values('distance')
+    return distances_df.head(top_n)
+
+def calculate_spread_quality_score(spread, zscore):
+    """
+    Calcula un score de calidad del spread para trading
+    Combina: estacionariedad, mean reversion, volatilidad
+    """
+    adf_result = adf_test(spread)
+    hurst = calculate_hurst_exponent(spread.dropna())
+    
+    # Crossings de cero del zscore (señal de mean reversion)
+    zero_crossings = ((zscore.shift(1) * zscore) < 0).sum()
+    crossing_rate = zero_crossings / len(zscore)
+    
+    # Volatilidad del spread
+    spread_vol = spread.std()
+    
+    # Score compuesto (0-100)
+    stationarity_score = 30 if adf_result['stationary'] else 0
+    mean_reversion_score = max(0, 30 * (1 - abs(hurst - 0.5) * 2))  # Mejor cerca de 0.5 o menos
+    crossing_score = min(30, crossing_rate * 1000)
+    volatility_score = max(0, 10 - spread_vol * 10)  # Penaliza alta volatilidad
+    
+    total_score = stationarity_score + mean_reversion_score + crossing_score + volatility_score
+    
+    return {
+        'total_score': total_score,
+        'stationarity_score': stationarity_score,
+        'mean_reversion_score': mean_reversion_score,
+        'crossing_score': crossing_score,
+        'volatility_score': volatility_score,
+        'zero_crossings': zero_crossings,
+        'crossing_rate': crossing_rate
+    }
+
+def calculate_rolling_beta_pairs(prices1, prices2, window=60):
+    """
+    Calcula beta rolling entre dos activos
+    Útil para pairs trading dinámico
+    """
+    returns1 = calculate_returns(prices1)
+    returns2 = calculate_returns(prices2)
+    
+    rolling_beta = returns1.rolling(window).cov(returns2) / returns2.rolling(window).var()
+    
+    return rolling_beta
+
+def calculate_correlation_percentile(corr_series, percentiles=[10, 25, 50, 75, 90]):
+    """
+    Calcula percentiles de la distribución de correlación
+    Útil para entender el rango histórico
+    """
+    result = {}
+    for p in percentiles:
+        result[f'p{p}'] = np.percentile(corr_series.dropna(), p)
+    
+    return result
 
 def calculate_skewness(returns, window=252):
     """Calcula Skewness rolling"""
@@ -742,110 +942,251 @@ def calculate_ulcer_index(prices, window=14):
 # NUEVAS FUNCIONES ESTADÍSTICAS AVANZADAS
 # =============================================================================
 
-def calculate_kelly_criterion(returns, rf_rate=0.02):
+def calculate_time_varying_correlation(returns1, returns2, method='ewm', span=30):
     """
-    Kelly Criterion: tamaño óptimo de posición
-    f* = (p*b - q) / b
-    donde p = prob ganar, q = prob perder, b = win/loss ratio
+    Correlación dinámica usando diferentes métodos
+    - ewm: Exponentially Weighted Moving Average
+    - dcc: Dynamic Conditional Correlation (simplificado)
     """
-    winning_returns = returns[returns > 0]
-    losing_returns = returns[returns < 0]
+    if method == 'ewm':
+        # Correlación EWMA
+        mean1 = returns1.ewm(span=span).mean()
+        mean2 = returns2.ewm(span=span).mean()
+        
+        cov = ((returns1 - mean1) * (returns2 - mean2)).ewm(span=span).mean()
+        std1 = (returns1 - mean1).pow(2).ewm(span=span).mean().pow(0.5)
+        std2 = (returns2 - mean2).pow(2).ewm(span=span).mean().pow(0.5)
+        
+        corr = cov / (std1 * std2)
+        return corr
+    else:
+        # Rolling standard
+        return returns1.rolling(span).corr(returns2)
+
+def calculate_partial_correlation(df, asset1, asset2, control_assets):
+    """
+    Correlación parcial: correlación entre asset1 y asset2
+    controlando por otros activos
+    Útil para eliminar efectos espurios
+    """
+    from sklearn.linear_model import LinearRegression
     
-    if len(winning_returns) == 0 or len(losing_returns) == 0:
-        return np.nan
+    returns = df.pct_change().dropna()
     
-    win_rate = len(winning_returns) / len(returns)
-    loss_rate = 1 - win_rate
-    avg_win = winning_returns.mean()
-    avg_loss = abs(losing_returns.mean())
-    win_loss_ratio = avg_win / avg_loss if avg_loss != 0 else 0
+    # Regresión de asset1 sobre control_assets
+    X_control = returns[control_assets].values
+    y1 = returns[asset1].values
+    y2 = returns[asset2].values
     
-    kelly = (win_rate * win_loss_ratio - loss_rate) / win_loss_ratio if win_loss_ratio != 0 else 0
+    # Residuales
+    model1 = LinearRegression().fit(X_control, y1)
+    model2 = LinearRegression().fit(X_control, y2)
+    
+    residuals1 = y1 - model1.predict(X_control)
+    residuals2 = y2 - model2.predict(X_control)
+    
+    # Correlación de residuales
+    partial_corr = np.corrcoef(residuals1, residuals2)[0, 1]
+    
+    return partial_corr
+
+def rank_correlation_spearman(prices1, prices2, window=60):
+    """
+    Correlación de Spearman (por rangos) rolling
+    Más robusta a outliers que Pearson
+    """
+    corr_spearman = []
+    dates = []
+    
+    for i in range(window, len(prices1)):
+        p1_window = prices1.iloc[i-window:i]
+        p2_window = prices2.iloc[i-window:i]
+        
+        rho, _ = stats.spearmanr(p1_window, p2_window)
+        corr_spearman.append(rho)
+        dates.append(prices1.index[i])
+    
+    return pd.Series(corr_spearman, index=dates)
+
+def calculate_tail_correlation(returns1, returns2, quantile=0.05):
+    """
+    Correlación en las colas de la distribución
+    Útil para entender comportamiento en eventos extremos
+    """
+    # Lower tail (pérdidas extremas)
+    threshold_lower = returns1.quantile(quantile)
+    mask_lower = (returns1 <= threshold_lower) | (returns2 <= returns2.quantile(quantile))
+    
+    # Upper tail (ganancias extremas)
+    threshold_upper = returns1.quantile(1 - quantile)
+    mask_upper = (returns1 >= threshold_upper) | (returns2 >= returns2.quantile(1 - quantile))
+    
+    corr_lower = returns1[mask_lower].corr(returns2[mask_lower])
+    corr_upper = returns1[mask_upper].corr(returns2[mask_upper])
+    corr_normal = returns1.corr(returns2)
     
     return {
-        'kelly_pct': kelly * 100,
-        'win_rate': win_rate * 100,
-        'win_loss_ratio': win_loss_ratio,
-        'avg_win': avg_win * 100,
-        'avg_loss': avg_loss * 100
+        'lower_tail': corr_lower,
+        'upper_tail': corr_upper,
+        'normal': corr_normal
     }
 
-def calculate_profit_factor(returns):
+def calculate_correlation_clustering_coefficient(corr_matrix, threshold=0.5):
     """
-    Profit Factor: suma de ganancias / suma de pérdidas
-    >1: estrategia rentable
+    Calcula coeficiente de clustering en red de correlaciones
+    Identifica grupos de activos altamente correlacionados
     """
-    gross_profit = returns[returns > 0].sum()
-    gross_loss = abs(returns[returns < 0].sum())
+    # Crear matriz de adyacencia
+    adj_matrix = (corr_matrix.abs() > threshold).astype(int)
+    np.fill_diagonal(adj_matrix.values, 0)
     
-    if gross_loss == 0:
-        return np.inf if gross_profit > 0 else 0
+    # Calcular clustering coefficient para cada nodo
+    n = len(adj_matrix)
+    clustering_coeffs = {}
     
-    return gross_profit / gross_loss
-
-def calculate_win_rate(returns):
-    """Calcula el porcentaje de operaciones ganadoras"""
-    if len(returns) == 0:
-        return 0
-    return (returns > 0).sum() / len(returns) * 100
-
-def calculate_expectancy(returns):
-    """
-    Expectancy: ganancia esperada por operación
-    E = (Win% * AvgWin) - (Loss% * AvgLoss)
-    """
-    winning_returns = returns[returns > 0]
-    losing_returns = returns[returns < 0]
-    
-    if len(returns) == 0:
-        return 0
-    
-    win_rate = len(winning_returns) / len(returns)
-    loss_rate = 1 - win_rate
-    avg_win = winning_returns.mean() if len(winning_returns) > 0 else 0
-    avg_loss = abs(losing_returns.mean()) if len(losing_returns) > 0 else 0
-    
-    expectancy = (win_rate * avg_win) - (loss_rate * avg_loss)
-    return expectancy * 100
-
-def calculate_mae_mfe(prices, window=252):
-    """
-    Maximum Adverse Excursion (MAE) y Maximum Favorable Excursion (MFE)
-    Útil para optimizar stops y targets
-    Calcula la máxima excursión adversa y favorable en una ventana rolling
-    """
-    returns = calculate_returns(prices)
-    cumulative = (1 + returns).cumprod()
-    
-    # Calcular excursiones rolling
-    mae_series = []
-    mfe_series = []
-    
-    for i in range(len(cumulative)):
-        if i < window:
-            mae_series.append(np.nan)
-            mfe_series.append(np.nan)
+    for i, asset in enumerate(adj_matrix.index):
+        neighbors = adj_matrix.iloc[i][adj_matrix.iloc[i] == 1].index
+        if len(neighbors) < 2:
+            clustering_coeffs[asset] = 0
             continue
         
-        # Mirar hacia atrás en la ventana
-        window_prices = cumulative.iloc[i-window:i+1]
-        entry_price = cumulative.iloc[i-window]
+        # Contar enlaces entre vecinos
+        links_between_neighbors = 0
+        for n1 in neighbors:
+            for n2 in neighbors:
+                if n1 != n2 and adj_matrix.loc[n1, n2] == 1:
+                    links_between_neighbors += 1
         
-        if entry_price == 0 or pd.isna(entry_price):
-            mae_series.append(np.nan)
-            mfe_series.append(np.nan)
-            continue
-        
-        mae = ((window_prices.min() - entry_price) / entry_price) * 100
-        mfe = ((window_prices.max() - entry_price) / entry_price) * 100
-        
-        mae_series.append(mae)
-        mfe_series.append(mfe)
+        # Clustering coefficient
+        possible_links = len(neighbors) * (len(neighbors) - 1)
+        clustering_coeffs[asset] = links_between_neighbors / possible_links if possible_links > 0 else 0
     
-    return pd.DataFrame({
-        'MAE': mae_series,
-        'MFE': mfe_series
-    }, index=cumulative.index)
+    return clustering_coeffs
+
+def detect_correlation_regime_changes(corr_series, window=30, threshold=0.3):
+    """
+    Detecta cambios de régimen en correlación usando ventana móvil
+    Retorna fechas donde ocurren cambios significativos
+    """
+    rolling_mean = corr_series.rolling(window).mean()
+    rolling_std = corr_series.rolling(window).std()
+    
+    # Z-score de la correlación
+    z_score = (corr_series - rolling_mean) / rolling_std
+    
+    # Detectar cambios significativos
+    regime_changes = z_score[z_score.abs() > threshold]
+    
+    return regime_changes
+
+def calculate_information_share(prices1, prices2, window=60):
+    """
+    Information Share: qué activo contribuye más al price discovery
+    Basado en Hasbrouck (1995)
+    """
+    returns1 = calculate_returns(prices1)
+    returns2 = calculate_returns(prices2)
+    
+    info_share = []
+    dates = []
+    
+    for i in range(window, len(returns1)):
+        r1_window = returns1.iloc[i-window:i]
+        r2_window = returns2.iloc[i-window:i]
+        
+        # Varianzas y covarianza
+        var1 = r1_window.var()
+        var2 = r2_window.var()
+        cov12 = r1_window.cov(r2_window)
+        
+        # Information share aproximado
+        if var1 + var2 != 0:
+            is1 = (var1 + cov12) / (var1 + var2 + 2*cov12)
+            info_share.append(is1)
+            dates.append(returns1.index[i])
+        else:
+            info_share.append(np.nan)
+            dates.append(returns1.index[i])
+    
+    return pd.Series(info_share, index=dates)
+
+def calculate_cophenetic_correlation(corr_matrix):
+    """
+    Correlación cofenética para evaluar calidad del clustering jerárquico
+    Valores altos indican buena estructura de clustering
+    """
+    from scipy.cluster.hierarchy import linkage, cophenet
+    from scipy.spatial.distance import pdist
+    
+    # Convertir correlación a distancia
+    distance_matrix = 1 - corr_matrix.abs()
+    
+    # Clustering jerárquico
+    linkage_matrix = linkage(pdist(distance_matrix), method='average')
+    
+    # Correlación cofenética
+    c, _ = cophenet(linkage_matrix, pdist(distance_matrix))
+    
+    return c
+
+def find_best_pairs_comprehensive(df, min_cointegration_pvalue=0.05, 
+                                  max_distance=1.0, min_correlation=0.7):
+    """
+    Encuentra los mejores pares usando múltiples criterios:
+    - Cointegración
+    - Distancia
+    - Correlación
+    - Hurst exponent
+    """
+    assets = df.columns
+    candidates = []
+    
+    for i, asset1 in enumerate(assets):
+        for asset2 in assets[i+1:]:
+            prices1 = df[asset1].dropna()
+            prices2 = df[asset2].dropna()
+            
+            # Índice común
+            common_idx = prices1.index.intersection(prices2.index)
+            if len(common_idx) < 252:  # Mínimo 1 año de datos
+                continue
+            
+            p1 = prices1.loc[common_idx]
+            p2 = prices2.loc[common_idx]
+            
+            # Tests
+            coint_result = test_cointegration(p1, p2)
+            if not coint_result['cointegrated']:
+                continue
+            
+            spread, _ = calculate_spread(p1, p2)
+            hurst = calculate_hurst_exponent(spread.dropna())
+            
+            distance = calculate_distance_correlation(p1, p2, 'euclidean')
+            correlation = p1.corr(p2)
+            
+            # Score compuesto
+            score = 0
+            if coint_result['pvalue'] < min_cointegration_pvalue:
+                score += 30
+            if abs(correlation) > min_correlation:
+                score += 20
+            if hurst < 0.5:  # Mean reverting
+                score += 30
+            if distance < max_distance:
+                score += 20
+            
+            candidates.append({
+                'asset1': asset1,
+                'asset2': asset2,
+                'score': score,
+                'correlation': correlation,
+                'cointegration_pvalue': coint_result['pvalue'],
+                'hurst': hurst,
+                'distance': distance
+            })
+    
+    return pd.DataFrame(candidates).sort_values('score', ascending=False)
 
 def calculate_information_coefficient(predictions, actual_returns):
     """
@@ -1165,47 +1506,227 @@ def plot_distribution_analysis(returns):
     
     return fig
 
-def plot_technical_indicators(prices):
-    """Gráfico de indicadores técnicos"""
-    fig = make_subplots(
-        rows=3, cols=1,
-        subplot_titles=('Precio y Bollinger Bands', 'RSI', 'MACD'),
-        vertical_spacing=0.1,
-        row_heights=[0.5, 0.25, 0.25]
+def plot_lead_lag_correlation(lead_lag_df, asset1_name, asset2_name):
+    """Visualiza correlación con diferentes lags"""
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=lead_lag_df['lag'],
+        y=lead_lag_df['correlation'],
+        mode='lines+markers',
+        name='Lead-Lag Correlation',
+        line=dict(color='#3b82f6', width=3),
+        marker=dict(size=6)
+    ))
+    
+    # Línea en lag=0
+    fig.add_vline(x=0, line_dash="dash", line_color="#fbbf24", 
+                  annotation_text="No Lag", annotation_position="top")
+    
+    # Línea de correlación cero
+    fig.add_hline(y=0, line_dash="dot", line_color="#666666")
+    
+    # Encontrar máximo
+    max_corr_idx = lead_lag_df['correlation'].abs().idxmax()
+    max_lag = lead_lag_df.loc[max_corr_idx, 'lag']
+    max_corr = lead_lag_df.loc[max_corr_idx, 'correlation']
+    
+    fig.add_annotation(
+        x=max_lag, y=max_corr,
+        text=f"Max: {max_corr:.3f}<br>Lag: {max_lag}",
+        showarrow=True,
+        arrowhead=2,
+        bgcolor="#10b981" if max_corr > 0 else "#ef4444",
+        opacity=0.8
     )
     
-    # Bollinger Bands
-    bb = calculate_bollinger_bands(prices)
-    fig.add_trace(go.Scatter(x=prices.index, y=prices, name='Precio',
-                             line=dict(color='#ffffff', width=2)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=bb.index, y=bb['upper'], name='Upper BB',
-                             line=dict(color='#ef4444', width=1, dash='dash')), row=1, col=1)
-    fig.add_trace(go.Scatter(x=bb.index, y=bb['middle'], name='SMA',
-                             line=dict(color='#fbbf24', width=1)), row=1, col=1)
-    fig.add_trace(go.Scatter(x=bb.index, y=bb['lower'], name='Lower BB',
-                             line=dict(color='#10b981', width=1, dash='dash')), row=1, col=1)
+    fig.update_layout(
+        title=f'Lead-Lag Correlation: {asset1_name} vs {asset2_name}',
+        xaxis_title='Lag (días)',
+        yaxis_title='Correlación',
+        template='plotly_dark',
+        height=500
+    )
     
-    # RSI
-    rsi = calculate_rsi(prices)
-    fig.add_trace(go.Scatter(x=rsi.index, y=rsi, name='RSI',
-                             line=dict(color='#8b5cf6', width=2)), row=2, col=1)
-    fig.add_hline(y=70, line_dash="dash", line_color="#ef4444", row=2, col=1)
-    fig.add_hline(y=30, line_dash="dash", line_color="#10b981", row=2, col=1)
-    fig.add_hline(y=50, line_dash="dot", line_color="#666666", row=2, col=1)
+    return fig
+
+def plot_multi_window_correlation(corr_multi_df, asset1_name, asset2_name):
+    """Visualiza correlación con múltiples ventanas temporales"""
+    fig = go.Figure()
     
-    # MACD
-    macd = calculate_macd(prices)
-    fig.add_trace(go.Scatter(x=macd.index, y=macd['macd'], name='MACD',
-                             line=dict(color='#3b82f6', width=2)), row=3, col=1)
-    fig.add_trace(go.Scatter(x=macd.index, y=macd['signal'], name='Signal',
-                             line=dict(color='#ef4444', width=1)), row=3, col=1)
-    fig.add_trace(go.Bar(x=macd.index, y=macd['histogram'], name='Histogram',
-                         marker_color='#10b981'), row=3, col=1)
+    colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444']
     
-    fig.update_layout(height=900, template='plotly_dark')
-    fig.update_yaxes(title_text="Precio", row=1, col=1)
-    fig.update_yaxes(title_text="RSI", row=2, col=1)
-    fig.update_yaxes(title_text="MACD", row=3, col=1)
+    for i, col in enumerate(corr_multi_df.columns):
+        window_size = col.replace('corr_', '').replace('d', '')
+        fig.add_trace(go.Scatter(
+            x=corr_multi_df.index,
+            y=corr_multi_df[col],
+            mode='lines',
+            name=f'{window_size} días',
+            line=dict(color=colors[i % len(colors)], width=2)
+        ))
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="#666666")
+    
+    fig.update_layout(
+        title=f'Multi-Window Rolling Correlation: {asset1_name} vs {asset2_name}',
+        xaxis_title='Fecha',
+        yaxis_title='Correlación',
+        template='plotly_dark',
+        height=500,
+        hovermode='x unified'
+    )
+    
+    return fig
+
+def plot_correlation_stability(stability_df):
+    """Visualiza estabilidad de la correlación"""
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=('Correlación Media Rolling', 'Estabilidad (Coefficient of Variation)'),
+        vertical_spacing=0.15
+    )
+    
+    fig.add_trace(go.Scatter(
+        x=stability_df.index,
+        y=stability_df['corr_mean'],
+        name='Correlación Media',
+        line=dict(color='#3b82f6', width=2),
+        fill='tonexty',
+        fillcolor='rgba(59, 130, 246, 0.2)'
+    ), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(
+        x=stability_df.index,
+        y=stability_df['stability_cv'],
+        name='Coef. Variación',
+        line=dict(color='#f59e0b', width=2)
+    ), row=2, col=1)
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="#666666", row=1, col=1)
+    
+    fig.update_layout(
+        height=600,
+        template='plotly_dark',
+        showlegend=False
+    )
+    
+    fig.update_yaxes(title_text="Correlación", row=1, col=1)
+    fig.update_yaxes(title_text="CV", row=2, col=1)
+    
+    return fig
+
+def plot_ou_process_analysis(spread, ou_params):
+    """Visualiza análisis del proceso Ornstein-Uhlenbeck"""
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=(
+            f'Spread (μ={ou_params["mu"]:.4f}, θ={ou_params["theta"]:.4f})',
+            'Spread vs Nivel de Equilibrio'
+        ),
+        vertical_spacing=0.15
+    )
+    
+    # Spread original
+    fig.add_trace(go.Scatter(
+        x=spread.index,
+        y=spread,
+        name='Spread',
+        line=dict(color='#3b82f6', width=2)
+    ), row=1, col=1)
+    
+    # Nivel de equilibrio
+    if not np.isnan(ou_params['mu']):
+        fig.add_hline(
+            y=ou_params['mu'],
+            line_dash="dash",
+            line_color="#10b981",
+            annotation_text=f"μ = {ou_params['mu']:.4f}",
+            row=1, col=1
+        )
+        
+        # Bandas basadas en sigma
+        sigma = ou_params['sigma']
+        fig.add_hline(y=ou_params['mu'] + sigma, line_dash="dot", 
+                     line_color="#ef4444", opacity=0.5, row=1, col=1)
+        fig.add_hline(y=ou_params['mu'] - sigma, line_dash="dot", 
+                     line_color="#ef4444", opacity=0.5, row=1, col=1)
+    
+    # Desviación del equilibrio
+    if not np.isnan(ou_params['mu']):
+        deviation = spread - ou_params['mu']
+        fig.add_trace(go.Scatter(
+            x=spread.index,
+            y=deviation,
+            name='Desviación',
+            line=dict(color='#ec4899', width=2),
+            fill='tozeroy'
+        ), row=2, col=1)
+        
+        fig.add_hline(y=0, line_dash="dash", line_color="#666666", row=2, col=1)
+    
+    fig.update_layout(height=700, template='plotly_dark')
+    fig.update_yaxes(title_text="Spread", row=1, col=1)
+    fig.update_yaxes(title_text="Desviación", row=2, col=1)
+    
+    return fig
+
+def plot_cointegration_strength(coint_strength, asset1_name, asset2_name):
+    """Visualiza fuerza de cointegración en el tiempo"""
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=coint_strength.index,
+        y=coint_strength,
+        mode='lines',
+        name='Cointegration Score',
+        line=dict(color='#8b5cf6', width=2),
+        fill='tozeroy',
+        fillcolor='rgba(139, 92, 246, 0.2)'
+    ))
+    
+    # Línea de threshold (valores más altos = más cointegrado)
+    fig.add_hline(y=0, line_dash="dash", line_color="#666666")
+    
+    fig.update_layout(
+        title=f'Rolling Cointegration Strength: {asset1_name} vs {asset2_name}',
+        xaxis_title='Fecha',
+        yaxis_title='Cointegration Score (más alto = más cointegrado)',
+        template='plotly_dark',
+        height=400
+    )
+    
+    return fig
+
+def plot_best_pairs_ranking(pairs_df, top_n=15):
+    """Visualiza ranking de mejores pares"""
+    top_pairs = pairs_df.head(top_n).copy()
+    top_pairs['pair_label'] = top_pairs['asset1'] + ' / ' + top_pairs['asset2']
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Bar(
+        y=top_pairs['pair_label'],
+        x=top_pairs['score'],
+        orientation='h',
+        marker=dict(
+            color=top_pairs['score'],
+            colorscale='Viridis',
+            showscale=True,
+            colorbar=dict(title="Score")
+        ),
+        text=top_pairs['score'].round(1),
+        textposition='auto'
+    ))
+    
+    fig.update_layout(
+        title=f'Top {top_n} Mejores Pares para Trading',
+        xaxis_title='Score de Calidad',
+        yaxis_title='Par',
+        template='plotly_dark',
+        height=600,
+        yaxis={'categoryorder': 'total ascending'}
+    )
     
     return fig
 
@@ -1213,8 +1734,8 @@ def plot_technical_indicators(prices):
 # INTERFAZ PRINCIPAL
 # =============================================================================
 
-st.title("📊 Advanced Correlation & Trading Analyzer Pro")
-st.markdown("🚀 Análisis avanzado de correlaciones, trading stats y análisis multi-activo | 120+ Activos Globales")
+st.title("📊 Correlation & Pairs Trading Analyzer Pro")
+st.markdown("🎯 Análisis avanzado de correlaciones y pairs trading | 120+ Activos Globales | Detección automática de pares")
 
 # Sidebar - Configuración
 st.sidebar.header("⚙️ Configuración")
@@ -1297,17 +1818,18 @@ st.success(f"✅ Datos cargados: {len(df_prices)} días | {df_prices.index[0].da
 # TABS PRINCIPALES
 # =============================================================================
 
-tab1, tab2, tab3, tab4, tab5, tab6, tab7 = st.tabs([
-    "📈 Análisis de Pares", 
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
+    "📈 Análisis de Pares Detallado", 
     "🔥 Heatmap & Clustering", 
-    "📊 Estadísticas Básicas",
+    "📊 Estadísticas de Correlación",
     "⚡ Métricas de Riesgo",
     "🎯 Pairs Trading Avanzado",
-    "📉 Análisis Técnico",
-    "🧮 Trading Stats Avanzadas"
+    "🔍 Búsqueda de Mejores Pares"
 ])
 
 with tab1:
+    st.subheader("📈 Análisis Detallado de Pares")
+    
     col1, col2 = st.columns(2)
     
     with col1:
@@ -1326,10 +1848,11 @@ with tab1:
             key='asset2'
         )
     
-    # Calcular correlación
+    # Calcular correlación básica
     corr_df = calculate_rolling_correlation(df_prices, asset1, asset2, window_size, step_size)
     
-    # Métricas
+    # Métricas básicas
+    st.markdown("### 📊 Métricas de Correlación")
     col1, col2, col3, col4 = st.columns(4)
     
     current_corr = corr_df['correlation'].iloc[-1]
@@ -1342,7 +1865,7 @@ with tab1:
     col3.metric("Máxima", f"{max_corr:.4f}")
     col4.metric("Mínima", f"{min_corr:.4f}")
     
-    # Gráfico de correlación
+    # Gráfico de correlación rolling
     st.plotly_chart(
         plot_rolling_correlation(corr_df, ASSETS[asset1]['label'], 
                                 ASSETS[asset2]['label'],
@@ -1351,29 +1874,73 @@ with tab1:
         use_container_width=True
     )
     
-    # Gráfico de precios
+    # Lead-Lag Correlation
+    st.markdown("### 🔄 Lead-Lag Correlation Analysis")
+    st.caption("Detecta si un activo lidera al otro (útil para predicción y timing)")
+    
+    returns1 = calculate_returns(df_prices[asset1])
+    returns2 = calculate_returns(df_prices[asset2])
+    
+    lead_lag_df = calculate_lead_lag_correlation(returns1, returns2, max_lag=10)
+    st.plotly_chart(plot_lead_lag_correlation(lead_lag_df, ASSETS[asset1]['label'], 
+                                              ASSETS[asset2]['label']), use_container_width=True)
+    
+    # Interpretación del Lead-Lag
+    max_corr_idx = lead_lag_df['correlation'].abs().idxmax()
+    max_lag = lead_lag_df.loc[max_corr_idx, 'lag']
+    max_corr_val = lead_lag_df.loc[max_corr_idx, 'correlation']
+    
+    if max_lag < 0:
+        st.info(f"💡 **{ASSETS[asset2]['label']}** lidera a **{ASSETS[asset1]['label']}** por {abs(max_lag)} días (correlación: {max_corr_val:.3f})")
+    elif max_lag > 0:
+        st.info(f"💡 **{ASSETS[asset1]['label']}** lidera a **{ASSETS[asset2]['label']}** por {max_lag} días (correlación: {max_corr_val:.3f})")
+    else:
+        st.info(f"💡 No hay relación de liderazgo clara. Correlación simultánea: {max_corr_val:.3f}")
+    
+    # Multi-Window Correlation
+    st.markdown("### 📊 Correlación Multi-Ventana")
+    st.caption("Observa cómo cambia la correlación en diferentes timeframes (corto, medio, largo plazo)")
+    
+    multi_corr = calculate_rolling_correlation_multi_window(df_prices, asset1, asset2, 
+                                                             windows=[10, 30, 60, 120])
+    st.plotly_chart(plot_multi_window_correlation(multi_corr, ASSETS[asset1]['label'], 
+                                                  ASSETS[asset2]['label']), use_container_width=True)
+    
+    # Métricas multi-ventana actuales
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Corr 10d", f"{multi_corr['corr_10d'].iloc[-1]:.3f}" if 'corr_10d' in multi_corr else "N/A")
+    col2.metric("Corr 30d", f"{multi_corr['corr_30d'].iloc[-1]:.3f}" if 'corr_30d' in multi_corr else "N/A")
+    col3.metric("Corr 60d", f"{multi_corr['corr_60d'].iloc[-1]:.3f}" if 'corr_60d' in multi_corr else "N/A")
+    col4.metric("Corr 120d", f"{multi_corr['corr_120d'].iloc[-1]:.3f}" if 'corr_120d' in multi_corr else "N/A")
+    
+    # Correlación condicional
+    st.markdown("### 🔍 Correlación Condicional")
+    st.caption("Cómo se correlacionan en diferentes condiciones de mercado (alcista/bajista/crisis)")
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    corr_positive = calculate_conditional_correlation(returns1, returns2, 'positive')
+    corr_negative = calculate_conditional_correlation(returns1, returns2, 'negative')
+    corr_crisis = calculate_conditional_correlation(returns1, returns2, 'crisis')
+    tail_corr = calculate_tail_correlation(returns1, returns2, quantile=0.05)
+    
+    col1.metric("Mercado Alcista", f"{corr_positive:.4f}")
+    col2.metric("Mercado Bajista", f"{corr_negative:.4f}")
+    col3.metric("Alta Volatilidad", f"{corr_crisis:.4f}")
+    col4.metric("Cola Inferior (5%)", f"{tail_corr['lower_tail']:.4f}")
+    
+    # Interpretación de correlación condicional
+    if abs(corr_crisis) > abs(tail_corr['normal']):
+        st.warning(f"⚠️ La correlación aumenta significativamente durante crisis ({corr_crisis:.3f} vs {tail_corr['normal']:.3f} normal)")
+    
+    # Comparación de precios
+    st.markdown("### 📉 Comparación de Precios Normalizados")
     st.plotly_chart(
         plot_price_comparison(df_prices, asset1, asset2, 
                             ASSETS[asset1]['label'], 
                             ASSETS[asset2]['label']),
         use_container_width=True
     )
-    
-    # Análisis condicional de correlación
-    st.subheader("🔍 Correlación Condicional")
-    
-    returns1 = calculate_returns(df_prices[asset1])
-    returns2 = calculate_returns(df_prices[asset2])
-    
-    col1, col2, col3 = st.columns(3)
-    
-    corr_positive = calculate_conditional_correlation(returns1, returns2, 'positive')
-    corr_negative = calculate_conditional_correlation(returns1, returns2, 'negative')
-    corr_crisis = calculate_conditional_correlation(returns1, returns2, 'crisis')
-    
-    col1.metric("Correlación (Alcista)", f"{corr_positive:.4f}")
-    col2.metric("Correlación (Bajista)", f"{corr_negative:.4f}")
-    col3.metric("Correlación (Crisis)", f"{corr_crisis:.4f}")
 
 with tab2:
     st.subheader("🔥 Matriz de Correlaciones")
@@ -1450,29 +2017,63 @@ with tab2:
             st.dataframe(pca_result['loadings'].style.background_gradient(cmap='RdYlGn', axis=0))
 
 with tab3:
-    st.subheader("📊 Estadísticas de Correlación")
+    st.subheader("📊 Estadísticas Avanzadas de Correlación")
     
-    # Análisis de períodos
-    positive = (corr_df['correlation'] > 0).sum()
-    negative = (corr_df['correlation'] < 0).sum()
-    strong_pos = (corr_df['correlation'] > 0.5).sum()
-    strong_neg = (corr_df['correlation'] < -0.5).sum()
-    total = len(corr_df)
-    
+    # Selección de par para análisis
     col1, col2 = st.columns(2)
     
     with col1:
-        st.metric("% Tiempo Correlación Positiva", f"{positive/total*100:.1f}%")
-        st.metric("% Tiempo Correlación Negativa", f"{negative/total*100:.1f}%")
+        stats_asset1 = st.selectbox(
+            "Activo 1",
+            options=selected_assets,
+            format_func=lambda x: ASSETS[x]['label'],
+            key='stats_asset1'
+        )
     
     with col2:
-        st.metric("% Tiempo Fuerte Positiva (>0.5)", f"{strong_pos/total*100:.1f}%")
-        st.metric("% Tiempo Fuerte Negativa (<-0.5)", f"{strong_neg/total*100:.1f}%")
+        stats_asset2 = st.selectbox(
+            "Activo 2",
+            options=[a for a in selected_assets if a != stats_asset1],
+            format_func=lambda x: ASSETS[x]['label'],
+            key='stats_asset2'
+        )
+    
+    # Análisis de períodos
+    corr_df_stats = calculate_rolling_correlation(df_prices, stats_asset1, stats_asset2, window_size, step_size)
+    
+    positive = (corr_df_stats['correlation'] > 0).sum()
+    negative = (corr_df_stats['correlation'] < 0).sum()
+    strong_pos = (corr_df_stats['correlation'] > 0.5).sum()
+    strong_neg = (corr_df_stats['correlation'] < -0.5).sum()
+    total = len(corr_df_stats)
+    
+    st.markdown("### 📈 Distribución Temporal")
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.metric("% Correlación Positiva", f"{positive/total*100:.1f}%")
+    with col2:
+        st.metric("% Correlación Negativa", f"{negative/total*100:.1f}%")
+    with col3:
+        st.metric("% Fuerte Positiva (>0.5)", f"{strong_pos/total*100:.1f}%")
+    with col4:
+        st.metric("% Fuerte Negativa (<-0.5)", f"{strong_neg/total*100:.1f}%")
+    
+    # Percentiles de correlación
+    st.markdown("### 📊 Distribución Percentiles")
+    percentiles = calculate_correlation_percentile(corr_df_stats['correlation'])
+    
+    col1, col2, col3, col4, col5 = st.columns(5)
+    col1.metric("P10", f"{percentiles['p10']:.3f}")
+    col2.metric("P25", f"{percentiles['p25']:.3f}")
+    col3.metric("P50 (Mediana)", f"{percentiles['p50']:.3f}")
+    col4.metric("P75", f"{percentiles['p75']:.3f}")
+    col5.metric("P90", f"{percentiles['p90']:.3f}")
     
     # Distribución de correlaciones
-    st.subheader("📈 Distribución de Correlaciones")
+    st.markdown("### 📈 Distribución Histórica")
     fig_hist = go.Figure(data=[go.Histogram(
-        x=corr_df['correlation'],
+        x=corr_df_stats['correlation'],
         nbinsx=50,
         marker_color='#3b82f6'
     )])
@@ -1486,6 +2087,80 @@ with tab3:
     )
     
     st.plotly_chart(fig_hist, use_container_width=True)
+    
+    # Estabilidad de correlación
+    st.markdown("### 🎯 Estabilidad de Correlación")
+    stability_df = calculate_correlation_stability(corr_df_stats['correlation'], window=60)
+    st.plotly_chart(plot_correlation_stability(stability_df), use_container_width=True)
+    
+    st.caption("💡 Un CV bajo indica una correlación más estable y predecible")
+    
+    # Breakpoints
+    st.markdown("### ⚡ Puntos de Cambio de Régimen")
+    breakpoints = find_correlation_breakpoints(corr_df_stats['correlation'], threshold=0.3)
+    
+    if len(breakpoints) > 0:
+        st.warning(f"⚠️ Detectados {len(breakpoints)} cambios significativos de correlación")
+        
+        # Mostrar tabla de breakpoints
+        bp_df = pd.DataFrame({
+            'Fecha': breakpoints.index,
+            'Cambio Absoluto': breakpoints.values
+        }).sort_values('Cambio Absoluto', ascending=False).head(10)
+        
+        st.dataframe(bp_df, use_container_width=True)
+    else:
+        st.success("✅ Correlación relativamente estable (sin cambios abruptos)")
+    
+    # Correlación de Spearman vs Pearson
+    st.markdown("### 📊 Correlación Spearman vs Pearson")
+    st.caption("Spearman es más robusta a outliers que Pearson")
+    
+    prices1 = df_prices[stats_asset1]
+    prices2 = df_prices[stats_asset2]
+    
+    spearman_corr = rank_correlation_spearman(prices1, prices2, window=60)
+    pearson_corr = calculate_returns(prices1).rolling(60).corr(calculate_returns(prices2))
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=pearson_corr.index, y=pearson_corr, 
+                            name='Pearson', line=dict(color='#3b82f6', width=2)))
+    fig.add_trace(go.Scatter(x=spearman_corr.index, y=spearman_corr, 
+                            name='Spearman', line=dict(color='#10b981', width=2)))
+    
+    fig.update_layout(
+        title='Comparación Spearman vs Pearson',
+        template='plotly_dark',
+        height=400,
+        hovermode='x unified'
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
+    
+    # Análisis de correlación dinámica
+    st.markdown("### 🔄 Correlación Dinámica (EWMA)")
+    st.caption("Correlación con pesos exponenciales que da más importancia a datos recientes")
+    
+    returns1_stats = calculate_returns(prices1)
+    returns2_stats = calculate_returns(prices2)
+    
+    ewma_corr = calculate_time_varying_correlation(returns1_stats, returns2_stats, method='ewm', span=30)
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(x=ewma_corr.index, y=ewma_corr,
+                            name='EWMA Correlation',
+                            line=dict(color='#8b5cf6', width=2)))
+    fig.add_hline(y=0, line_dash="dash", line_color="#666666")
+    
+    fig.update_layout(
+        title='Correlación Dinámica (Exponentially Weighted)',
+        xaxis_title='Fecha',
+        yaxis_title='Correlación',
+        template='plotly_dark',
+        height=400
+    )
+    
+    st.plotly_chart(fig, use_container_width=True)
 
 with tab4:
     st.subheader("⚡ Métricas de Riesgo y Performance")
@@ -1667,134 +2342,185 @@ with tab5:
         st.caption("Menor = Más similares")
 
 with tab6:
-    st.subheader("📉 Análisis Técnico")
+    st.subheader("🔍 Búsqueda Automática de Mejores Pares")
+    st.caption("Identifica automáticamente los mejores pares para trading usando múltiples criterios")
     
-    tech_asset = st.selectbox(
-        "Selecciona activo",
-        options=selected_assets,
-        format_func=lambda x: ASSETS[x]['label'],
-        key='tech_asset'
-    )
-    
-    tech_prices = df_prices[tech_asset]
-    
-    st.plotly_chart(plot_technical_indicators(tech_prices), use_container_width=True)
-    
-    # Métricas actuales
-    st.markdown("### 🎯 Valores Actuales")
-    
-    rsi_current = calculate_rsi(tech_prices).iloc[-1]
-    bb = calculate_bollinger_bands(tech_prices)
-    macd_data = calculate_macd(tech_prices)
+    # Configuración de búsqueda
+    st.markdown("### ⚙️ Configuración de Búsqueda")
     
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.metric("RSI (14)", f"{rsi_current:.2f}")
-        if rsi_current > 70:
-            st.caption("🔴 Sobrecomprado")
-        elif rsi_current < 30:
-            st.caption("🟢 Sobrevendido")
+        min_coint_pvalue = st.slider("P-value máximo (cointegración)", 0.01, 0.10, 0.05, 0.01)
+    
+    with col2:
+        min_correlation = st.slider("Correlación mínima", 0.5, 0.95, 0.7, 0.05)
+    
+    with col3:
+        max_distance = st.slider("Distancia máxima", 0.5, 2.0, 1.0, 0.1)
+    
+    if st.button("🔎 Buscar Mejores Pares", type="primary"):
+        with st.spinner("Analizando pares... Esto puede tomar unos minutos..."):
+            best_pairs = find_best_pairs_comprehensive(
+                df_prices[selected_assets],
+                min_cointegration_pvalue=min_coint_pvalue,
+                max_distance=max_distance,
+                min_correlation=min_correlation
+            )
+        
+        if len(best_pairs) > 0:
+            st.success(f"✅ Encontrados {len(best_pairs)} pares que cumplen los criterios")
+            
+            # Mostrar gráfico de ranking
+            st.plotly_chart(plot_best_pairs_ranking(best_pairs, top_n=15), use_container_width=True)
+            
+            # Mostrar tabla detallada
+            st.markdown("### 📋 Tabla Detallada de Pares")
+            
+            display_df = best_pairs.head(20).copy()
+            display_df['asset1_name'] = display_df['asset1'].apply(lambda x: ASSETS[x]['label'])
+            display_df['asset2_name'] = display_df['asset2'].apply(lambda x: ASSETS[x]['label'])
+            
+            display_columns = {
+                'asset1_name': 'Activo 1',
+                'asset2_name': 'Activo 2',
+                'score': 'Score',
+                'correlation': 'Correlación',
+                'cointegration_pvalue': 'P-value Coint.',
+                'hurst': 'Hurst Exp.',
+                'distance': 'Distancia'
+            }
+            
+            display_df = display_df[list(display_columns.keys())].rename(columns=display_columns)
+            
+            # Formatear tabla
+            def highlight_score(val):
+                if val > 80:
+                    color = '#10b981'
+                elif val > 60:
+                    color = '#84cc16'
+                elif val > 40:
+                    color = '#f59e0b'
+                else:
+                    color = '#ef4444'
+                return f'background-color: {color}; color: white'
+            
+            styled_table = display_df.style.applymap(
+                highlight_score, 
+                subset=['Score']
+            ).format({
+                'Score': '{:.1f}',
+                'Correlación': '{:.3f}',
+                'P-value Coint.': '{:.4f}',
+                'Hurst Exp.': '{:.3f}',
+                'Distancia': '{:.2f}'
+            })
+            
+            st.dataframe(styled_table, use_container_width=True)
+            
+            # Análisis del mejor par
+            st.markdown("### 🏆 Análisis del Mejor Par")
+            
+            best_pair = best_pairs.iloc[0]
+            best_asset1 = best_pair['asset1']
+            best_asset2 = best_pair['asset2']
+            
+            st.info(f"**Mejor Par:** {ASSETS[best_asset1]['label']} / {ASSETS[best_asset2]['label']} | Score: {best_pair['score']:.1f}")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            col1.metric("Correlación", f"{best_pair['correlation']:.3f}")
+            col2.metric("Cointegración p-val", f"{best_pair['cointegration_pvalue']:.4f}")
+            col3.metric("Hurst Exponent", f"{best_pair['hurst']:.3f}")
+            col4.metric("Distancia", f"{best_pair['distance']:.2f}")
+            
+            # Gráficos del mejor par
+            prices1_best = df_prices[best_asset1]
+            prices2_best = df_prices[best_asset2]
+            
+            st.plotly_chart(
+                plot_price_comparison(df_prices, best_asset1, best_asset2,
+                                    ASSETS[best_asset1]['label'],
+                                    ASSETS[best_asset2]['label']),
+                use_container_width=True
+            )
+            
+            # Spread analysis
+            spread_best, hr_best = calculate_spread(prices1_best, prices2_best)
+            zscore_best = calculate_zscore(spread_best, window=30)
+            
+            st.plotly_chart(
+                plot_spread_analysis(prices1_best, prices2_best,
+                                   ASSETS[best_asset1]['label'],
+                                   ASSETS[best_asset2]['label']),
+                use_container_width=True
+            )
+            
+            # Descargar resultados
+            st.markdown("### 📥 Descargar Resultados")
+            csv_pairs = best_pairs.to_csv(index=False)
+            st.download_button(
+                label="Descargar tabla de pares como CSV",
+                data=csv_pairs,
+                file_name="mejores_pares_trading.csv",
+                mime="text/csv"
+            )
+            
         else:
-            st.caption("⚪ Neutral")
+            st.warning("⚠️ No se encontraron pares que cumplan todos los criterios. Intenta relajar los parámetros.")
     
-    with col2:
-        bb_position = ((tech_prices.iloc[-1] - bb['lower'].iloc[-1]) / 
-                      (bb['upper'].iloc[-1] - bb['lower'].iloc[-1])) * 100
-        st.metric("Posición en BB", f"{bb_position:.1f}%")
+    # Análisis de distancias entre todos los pares
+    st.markdown("### 📊 Análisis de Distancias")
+    st.caption("Pares más similares por distancia euclidiana")
     
-    with col3:
-        macd_signal = "🟢 Alcista" if macd_data['histogram'].iloc[-1] > 0 else "🔴 Bajista"
-        st.metric("Señal MACD", macd_signal)
-
-with tab7:
-    st.subheader("🧮 Trading Statistics Avanzadas")
-    
-    stats_asset = st.selectbox(
-        "Selecciona activo",
-        options=selected_assets,
-        format_func=lambda x: ASSETS[x]['label'],
-        key='stats_asset'
-    )
-    
-    stats_returns = calculate_returns(df_prices[stats_asset])
-    
-    # Kelly Criterion
-    st.markdown("### 💰 Kelly Criterion & Trading Metrics")
-    kelly = calculate_kelly_criterion(stats_returns)
-    
-    if isinstance(kelly, dict):
-        col1, col2, col3, col4 = st.columns(4)
+    if st.button("Calcular Distancias"):
+        with st.spinner("Calculando distancias..."):
+            distance_pairs = detect_pairs_by_distance(df_prices[selected_assets], 
+                                                      method='euclidean', top_n=20)
         
-        with col1:
-            st.metric("Kelly %", f"{kelly['kelly_pct']:.2f}%")
-            st.caption("Tamaño óptimo de posición")
-        
-        with col2:
-            st.metric("Win Rate", f"{kelly['win_rate']:.1f}%")
-        
-        with col3:
-            st.metric("Win/Loss Ratio", f"{kelly['win_loss_ratio']:.2f}")
-        
-        with col4:
-            st.metric("Avg Win", f"{kelly['avg_win']:.2f}%")
-    
-    # Profit Factor & Expectancy
-    st.markdown("### 📊 Performance Metrics")
-    
-    profit_factor = calculate_profit_factor(stats_returns)
-    win_rate = calculate_win_rate(stats_returns)
-    expectancy = calculate_expectancy(stats_returns)
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Profit Factor", f"{profit_factor:.2f}")
-        st.caption(">1: Rentable")
-    
-    with col2:
-        st.metric("Win Rate", f"{win_rate:.1f}%")
-    
-    with col3:
-        st.metric("Expectancy", f"{expectancy:.3f}%")
-        st.caption("Ganancia esperada por trade")
-    
-    # MAE/MFE Analysis
-    st.markdown("### 📉 MAE/MFE Analysis")
-    mae_mfe = calculate_mae_mfe(df_prices[stats_asset])
-    
-    if not mae_mfe.empty:
-        fig = make_subplots(rows=2, cols=1, 
-                           subplot_titles=('Maximum Adverse Excursion', 'Maximum Favorable Excursion'))
-        
-        fig.add_trace(go.Scatter(x=mae_mfe.index, y=mae_mfe['MAE'], 
-                                name='MAE', line=dict(color='#ef4444')), row=1, col=1)
-        fig.add_trace(go.Scatter(x=mae_mfe.index, y=mae_mfe['MFE'], 
-                                name='MFE', line=dict(color='#10b981')), row=2, col=1)
-        
-        fig.update_layout(height=600, template='plotly_dark')
-        st.plotly_chart(fig, use_container_width=True)
+        if len(distance_pairs) > 0:
+            distance_pairs['asset1_name'] = distance_pairs['asset1'].apply(lambda x: ASSETS[x]['label'])
+            distance_pairs['asset2_name'] = distance_pairs['asset2'].apply(lambda x: ASSETS[x]['label'])
+            
+            display_dist = distance_pairs[['asset1_name', 'asset2_name', 'distance']].rename(columns={
+                'asset1_name': 'Activo 1',
+                'asset2_name': 'Activo 2',
+                'distance': 'Distancia'
+            })
+            
+            st.dataframe(display_dist, use_container_width=True)
 
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 Guía de Métricas")
 st.sidebar.markdown("""
 **Correlaciones:**
-- > 0.5: Fuerte positiva
-- < -0.5: Fuerte negativa
+- > 0.7: Muy fuerte
+- 0.5-0.7: Fuerte  
+- 0.3-0.5: Moderada
+- < 0.3: Débil
+
+**Cointegración:**
+- P-value < 0.05: Cointegrados
+- Score negativo alto: Fuerte cointegración
+
+**Hurst Exponent:**
+- < 0.5: Mean reverting (bueno)
+- = 0.5: Random walk
+- > 0.5: Trending
 
 **Performance Ratios:**
 - Sharpe > 2: Excelente
 - Sortino > 2: Muy bueno
+- Beta > 1: Más volátil que benchmark
 
-**Kelly Criterion:**
-- Tamaño óptimo de posición
-- Usar 25-50% del Kelly
-
-**Profit Factor:**
-- > 1.5: Buena estrategia
-- > 2.0: Excelente estrategia
+**Pairs Trading:**
+- Z-Score > 2 o < -2: Señal de trading
+- Half-life < 10 días: Rápido mean reversion
+- ADF p-value < 0.05: Spread estacionario
 """)
 
 st.sidebar.markdown("---")
-st.sidebar.info(f"💡 {len(ASSETS)} activos disponibles | Datos actualizados cada hora")
+st.sidebar.info(f"💡 {len(ASSETS)} activos disponibles | Delay: {download_delay}s entre descargas")
+st.sidebar.markdown("---")
+st.sidebar.success("✨ Versión enfocada en Correlaciones & Pairs Trading")
