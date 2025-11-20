@@ -100,22 +100,6 @@ ASSETS = {
     'hang_seng': {'label': 'Hang Seng', 'symbol': '^HSI', 'category': 'Asia Equity'},
     'sensex': {'label': 'BSE Sensex', 'symbol': '^BSESN', 'category': 'Asia Equity'},
     
-    # ETFs SECTORIALES
-    'qqq': {'label': 'QQQ (Nasdaq ETF)', 'symbol': 'QQQ', 'category': 'US ETF'},
-    'spy': {'label': 'SPY (S&P 500 ETF)', 'symbol': 'SPY', 'category': 'US ETF'},
-    'dia': {'label': 'DIA (Dow ETF)', 'symbol': 'DIA', 'category': 'US ETF'},
-    'iwm': {'label': 'IWM (Russell 2000 ETF)', 'symbol': 'IWM', 'category': 'US ETF'},
-    'xlk': {'label': 'XLK (Technology)', 'symbol': 'XLK', 'category': 'Sector ETF'},
-    'xlf': {'label': 'XLF (Financials)', 'symbol': 'XLF', 'category': 'Sector ETF'},
-    'xle': {'label': 'XLE (Energy)', 'symbol': 'XLE', 'category': 'Sector ETF'},
-    'xlv': {'label': 'XLV (Healthcare)', 'symbol': 'XLV', 'category': 'Sector ETF'},
-    'xly': {'label': 'XLY (Consumer Disc)', 'symbol': 'XLY', 'category': 'Sector ETF'},
-    'xlp': {'label': 'XLP (Consumer Staples)', 'symbol': 'XLP', 'category': 'Sector ETF'},
-    'xlu': {'label': 'XLU (Utilities)', 'symbol': 'XLU', 'category': 'Sector ETF'},
-    'xlb': {'label': 'XLB (Materials)', 'symbol': 'XLB', 'category': 'Sector ETF'},
-    'xli': {'label': 'XLI (Industrials)', 'symbol': 'XLI', 'category': 'Sector ETF'},
-    'xlre': {'label': 'XLRE (Real Estate)', 'symbol': 'XLRE', 'category': 'Sector ETF'},
-    
     # DIVISAS
     'dxy': {'label': 'DXY (Dólar Index)', 'symbol': 'DX-Y.NYB', 'category': 'FX'},
     'eurusd': {'label': 'EUR/USD', 'symbol': 'EURUSD=X', 'category': 'FX'},
@@ -136,12 +120,6 @@ ASSETS = {
     'corn': {'label': 'Maíz', 'symbol': 'ZC=F', 'category': 'Agriculture'},
     'wheat': {'label': 'Trigo', 'symbol': 'ZW=F', 'category': 'Agriculture'},
     'soybeans': {'label': 'Soja', 'symbol': 'ZS=F', 'category': 'Agriculture'},
-    
-    # BONOS
-    'us10y': {'label': 'Treasury 10Y', 'symbol': '^TNX', 'category': 'Bonds'},
-    'us2y': {'label': 'Treasury 2Y', 'symbol': '^IRX', 'category': 'Bonds'},
-    'tlt': {'label': 'TLT (20Y+ Treasury)', 'symbol': 'TLT', 'category': 'Bonds'},
-    'hyg': {'label': 'HYG (High Yield)', 'symbol': 'HYG', 'category': 'Bonds'},
     
     # VOLATILIDAD
     'vix': {'label': 'VIX (S&P 500 Vol)', 'symbol': '^VIX', 'category': 'Volatility'},
