@@ -309,8 +309,8 @@ def calculate_correlation(prices1, prices2, window=100):
     corr = returns1.rolling(window).corr(returns2)
     return corr.dropna()
 
-def calculate_rolling_correlation(df, asset1, asset2, window=30, step=5):
-    """Calcula la correlación móvil entre dos activos"""
+def calculate_rolling_correlation(df, asset1, asset2, window=30, step=1):
+    """Calcula la correlación móvil entre dos activos con step diario"""
     correlations = []
     dates = []
     
@@ -609,7 +609,7 @@ def find_best_pairs_for_ea(df, correlation_type='positive', min_correlation=0.5,
 # FUNCIONES DE VISUALIZACIÓN
 # ============================================================================
 
-def plot_rolling_correlation(corr_df, asset1_name, asset2_name, asset1_color='#10b981', asset2_color='#3b82f6'):
+def plot_rolling_correlation(corr_df, asset1_name, asset2_name):
     """Crea un gráfico interactivo de la correlación móvil"""
     fig = go.Figure()
     
@@ -618,7 +618,7 @@ def plot_rolling_correlation(corr_df, asset1_name, asset2_name, asset1_color='#1
         y=corr_df['correlation'],
         mode='lines',
         name=f'{asset1_name} vs {asset2_name}',
-        line=dict(color='#3b82f6', width=3),
+        line=dict(color='#3b82f6', width=2),
         hovertemplate='%{x}<br>Correlación: %{y:.4f}<extra></extra>'
     ))
     
@@ -637,8 +637,51 @@ def plot_rolling_correlation(corr_df, asset1_name, asset2_name, asset1_color='#1
         yaxis=dict(range=[-1, 1]),
         template='plotly_dark',
         hovermode='x unified',
-        height=500,
+        height=400,
         showlegend=True
+    )
+    
+    return fig
+
+def plot_multiple_rolling_correlations(df, pairs_list, window=10):
+    """Crea gráficos de rolling correlation para múltiples pares"""
+    fig = make_subplots(
+        rows=(len(pairs_list) + 1) // 2, 
+        cols=2,
+        subplot_titles=[f"{ASSETS[p['asset1']]['label']} vs {ASSETS[p['asset2']]['label']}" 
+                       for p in pairs_list],
+        vertical_spacing=0.08,
+        horizontal_spacing=0.1
+    )
+    
+    for idx, pair in enumerate(pairs_list):
+        row = (idx // 2) + 1
+        col = (idx % 2) + 1
+        
+        corr_df = calculate_rolling_correlation(df, pair['asset1'], pair['asset2'], window=window, step=1)
+        
+        fig.add_trace(
+            go.Scatter(
+                x=corr_df['date'],
+                y=corr_df['correlation'],
+                mode='lines',
+                name=f"{ASSETS[pair['asset1']]['label'][:10]} vs {ASSETS[pair['asset2']]['label'][:10]}",
+                line=dict(width=1.5),
+                showlegend=False
+            ),
+            row=row, col=col
+        )
+        
+        fig.add_hline(y=0, line_dash="dash", line_color="#666666", opacity=0.5, row=row, col=col)
+        fig.add_hline(y=0.5, line_dash="dot", line_color="#10b981", opacity=0.3, row=row, col=col)
+        fig.add_hline(y=-0.5, line_dash="dot", line_color="#ef4444", opacity=0.3, row=row, col=col)
+        
+        fig.update_yaxes(range=[-1, 1], row=row, col=col)
+    
+    fig.update_layout(
+        height=300 * ((len(pairs_list) + 1) // 2),
+        template='plotly_dark',
+        showlegend=False
     )
     
     return fig
@@ -849,12 +892,11 @@ if 'all_asset_data' not in st.session_state:
     **Para comenzar:**
     1. Presiona "📥 Descargar Todos los Activos"
     2. Los datos se guardarán en disco
-    3. Se usarán TODOS los activos para encontrar correlaciones
     """)
     st.stop()
 
 # ============================================================================
-# PARÁMETROS DEL EA (SIN AUTO-UPDATE)
+# PARÁMETROS DEL EA
 # ============================================================================
 
 st.sidebar.markdown("---")
@@ -868,6 +910,9 @@ st.sidebar.subheader("Filtros de Búsqueda")
 min_signals_year = st.sidebar.slider("Mín. Señales/Año", 5, 100, 10, 5, key='param_signals')
 max_cv = st.sidebar.slider("Máx. CV (estabilidad)", 0.2, 0.8, 0.4, 0.05, key='param_cv')
 
+st.sidebar.subheader("Rolling Correlation")
+rolling_window = st.sidebar.slider("Window (días)", 10, 200, 30, 5, key='param_rolling_window')
+
 # Crear DataFrame con TODOS los activos
 df_all_prices = merge_asset_data(st.session_state.all_asset_data)
 
@@ -876,230 +921,290 @@ if df_all_prices.empty:
     st.stop()
 
 st.success(f"✅ {len(df_all_prices)} días | {df_all_prices.index[0].date()} → {df_all_prices.index[-1].date()}")
-st.info(f"📊 Usando {len(df_all_prices.columns)} activos para análisis de correlaciones")
+st.info(f"📊 Usando {len(df_all_prices.columns)} activos para análisis")
 
 # ============================================================================
-# BÚSQUEDA INICIAL DE PARES (CON BOTÓN)
+# TABS
 # ============================================================================
 
-st.markdown("---")
-st.header("🔍 Mejores Pares Encontrados (Todos los Activos)")
+tab1, tab2, tab3 = st.tabs([
+    "🔍 Búsqueda de Pares",
+    "📊 Análisis Individual",
+    "📈 Análisis Detallado Top Pares"
+])
 
-if st.button("🚀 Buscar Mejores Pares", type="primary", key='btn_search_pairs'):
-    
-    # Buscar pares con CORRELACIÓN POSITIVA
-    st.markdown("### 📈 Buscando Pares con Correlación POSITIVA...")
-    with st.spinner("Analizando correlaciones positivas..."):
-        positive_pairs = find_best_pairs_for_ea(
-            df_all_prices,
-            correlation_type='positive',
-            min_correlation=correlation_threshold,
-            min_signals_per_year=min_signals_year,
-            max_cv=max_cv,
-            zscore_threshold=zscore_threshold,
-            lookback=lookback
-        )
-    
-    # Buscar pares con CORRELACIÓN NEGATIVA
-    st.markdown("### 📉 Buscando Pares con Correlación NEGATIVA (Inversa)...")
-    with st.spinner("Analizando correlaciones negativas..."):
-        negative_pairs = find_best_pairs_for_ea(
-            df_all_prices,
-            correlation_type='negative',
-            min_correlation=correlation_threshold,
-            min_signals_per_year=min_signals_year,
-            max_cv=max_cv,
-            zscore_threshold=zscore_threshold,
-            lookback=lookback
-        )
-    
-    # Guardar en session state
-    st.session_state.positive_pairs = positive_pairs
-    st.session_state.negative_pairs = negative_pairs
-    st.success("✅ Búsqueda completada!")
+# ============================================================================
+# TAB 1: BÚSQUEDA DE PARES
+# ============================================================================
 
-# Mostrar resultados si existen
-if 'positive_pairs' in st.session_state and 'negative_pairs' in st.session_state:
+with tab1:
+    st.header("🔍 Búsqueda de Mejores Pares")
+    
+    if st.button("🚀 Buscar Mejores Pares", type="primary", key='btn_search_pairs'):
+        
+        st.markdown("### 📈 Buscando Pares con Correlación POSITIVA...")
+        with st.spinner("Analizando correlaciones positivas..."):
+            positive_pairs = find_best_pairs_for_ea(
+                df_all_prices,
+                correlation_type='positive',
+                min_correlation=correlation_threshold,
+                min_signals_per_year=min_signals_year,
+                max_cv=max_cv,
+                zscore_threshold=zscore_threshold,
+                lookback=lookback
+            )
+        
+        st.markdown("### 📉 Buscando Pares con Correlación NEGATIVA...")
+        with st.spinner("Analizando correlaciones negativas..."):
+            negative_pairs = find_best_pairs_for_ea(
+                df_all_prices,
+                correlation_type='negative',
+                min_correlation=correlation_threshold,
+                min_signals_per_year=min_signals_year,
+                max_cv=max_cv,
+                zscore_threshold=zscore_threshold,
+                lookback=lookback
+            )
+        
+        st.session_state.positive_pairs = positive_pairs
+        st.session_state.negative_pairs = negative_pairs
+        st.success("✅ Búsqueda completada!")
+    
+    if 'positive_pairs' in st.session_state and 'negative_pairs' in st.session_state:
+        
+        col1, col2 = st.columns(2)
+        
+        # ========== TABLA CORRELACIÓN POSITIVA ==========
+        with col1:
+            st.markdown("### 📈 Top 20 Pares - Correlación POSITIVA")
+            
+            if len(st.session_state.positive_pairs) > 0:
+                display_pos = st.session_state.positive_pairs.head(20).copy()
+                display_pos['Activo 1'] = display_pos['asset1'].apply(lambda x: ASSETS[x]['label'])
+                display_pos['Activo 2'] = display_pos['asset2'].apply(lambda x: ASSETS[x]['label'])
+                display_pos['InpInvertTrades'] = 'false'
+                display_pos['Estacionario'] = display_pos['stationary'].apply(lambda x: '✅' if x else '❌')
+                display_pos['Cointegrado'] = display_pos['cointegrated'].apply(lambda x: '✅' if x else '❌')
+                
+                table_pos = display_pos[['Activo 1', 'Activo 2', 'score', 'mean_correlation', 
+                                         'signals_per_year', 'win_rate', 'hurst', 'half_life',
+                                         'Estacionario', 'Cointegrado', 'InpInvertTrades']].rename(columns={
+                    'score': 'Score',
+                    'mean_correlation': 'Corr',
+                    'signals_per_year': 'Señales/Año',
+                    'win_rate': 'Win Rate %',
+                    'hurst': 'Hurst',
+                    'half_life': 'Half-Life'
+                })
+                
+                st.dataframe(
+                    table_pos.style.format({
+                        'Score': '{:.1f}',
+                        'Corr': '{:.3f}',
+                        'Señales/Año': '{:.1f}',
+                        'Win Rate %': '{:.1f}%',
+                        'Hurst': '{:.3f}',
+                        'Half-Life': '{:.1f}'
+                    }),
+                    use_container_width=True,
+                    height=600
+                )
+                
+                st.metric("Total pares positivos", len(st.session_state.positive_pairs))
+                
+                # Selector de par
+                pair_options_pos = [f"{row['Activo 1']} / {row['Activo 2']}" 
+                                   for _, row in display_pos.iterrows()]
+                
+                selected_pos_pair = st.selectbox(
+                    "Seleccionar par para análisis detallado",
+                    options=pair_options_pos,
+                    key='select_pos_pair'
+                )
+                
+                if st.button("📊 Analizar Este Par", key='btn_analyze_pos'):
+                    idx = pair_options_pos.index(selected_pos_pair)
+                    selected_row = display_pos.iloc[idx]
+                    st.session_state.selected_asset1 = selected_row['asset1']
+                    st.session_state.selected_asset2 = selected_row['asset2']
+                    st.session_state.run_analysis = True
+                    st.success(f"✅ Par seleccionado: {selected_pos_pair}")
+                    st.info("👉 Ve a la pestaña 'Análisis Individual' para ver el análisis completo")
+                
+            else:
+                st.warning("No se encontraron pares con correlación positiva")
+        
+        # ========== TABLA CORRELACIÓN NEGATIVA ==========
+        with col2:
+            st.markdown("### 📉 Top 20 Pares - Correlación NEGATIVA")
+            
+            if len(st.session_state.negative_pairs) > 0:
+                display_neg = st.session_state.negative_pairs.head(20).copy()
+                display_neg['Activo 1'] = display_neg['asset1'].apply(lambda x: ASSETS[x]['label'])
+                display_neg['Activo 2'] = display_neg['asset2'].apply(lambda x: ASSETS[x]['label'])
+                display_neg['InpInvertTrades'] = 'true'
+                display_neg['Estacionario'] = display_neg['stationary'].apply(lambda x: '✅' if x else '❌')
+                display_neg['Cointegrado'] = display_neg['cointegrated'].apply(lambda x: '✅' if x else '❌')
+                
+                table_neg = display_neg[['Activo 1', 'Activo 2', 'score', 'mean_correlation', 
+                                         'signals_per_year', 'win_rate', 'hurst', 'half_life',
+                                         'Estacionario', 'Cointegrado', 'InpInvertTrades']].rename(columns={
+                    'score': 'Score',
+                    'mean_correlation': 'Corr',
+                    'signals_per_year': 'Señales/Año',
+                    'win_rate': 'Win Rate %',
+                    'hurst': 'Hurst',
+                    'half_life': 'Half-Life'
+                })
+                
+                st.dataframe(
+                    table_neg.style.format({
+                        'Score': '{:.1f}',
+                        'Corr': '{:.3f}',
+                        'Señales/Año': '{:.1f}',
+                        'Win Rate %': '{:.1f}%',
+                        'Hurst': '{:.3f}',
+                        'Half-Life': '{:.1f}'
+                    }),
+                    use_container_width=True,
+                    height=600
+                )
+                
+                st.metric("Total pares negativos", len(st.session_state.negative_pairs))
+                
+                # Selector de par
+                pair_options_neg = [f"{row['Activo 1']} / {row['Activo 2']}" 
+                                   for _, row in display_neg.iterrows()]
+                
+                selected_neg_pair = st.selectbox(
+                    "Seleccionar par para análisis detallado",
+                    options=pair_options_neg,
+                    key='select_neg_pair'
+                )
+                
+                if st.button("📊 Analizar Este Par", key='btn_analyze_neg'):
+                    idx = pair_options_neg.index(selected_neg_pair)
+                    selected_row = display_neg.iloc[idx]
+                    st.session_state.selected_asset1 = selected_row['asset1']
+                    st.session_state.selected_asset2 = selected_row['asset2']
+                    st.session_state.run_analysis = True
+                    st.success(f"✅ Par seleccionado: {selected_neg_pair}")
+                    st.info("👉 Ve a la pestaña 'Análisis Individual' para ver el análisis completo")
+                
+            else:
+                st.warning("No se encontraron pares con correlación negativa")
+
+# ============================================================================
+# TAB 2: ANÁLISIS INDIVIDUAL
+# ============================================================================
+
+with tab2:
+    st.header("📊 Análisis Individual de Par")
+    
+    # Selección de activos (con valores por defecto si hay par seleccionado)
+    available_assets = list(st.session_state.all_asset_data.keys())
+    
+    default_asset1 = st.session_state.get('selected_asset1', available_assets[0])
+    default_asset2 = st.session_state.get('selected_asset2', available_assets[1] if len(available_assets) > 1 else available_assets[0])
+    
+    # Asegurar que asset2 no sea igual a asset1
+    if default_asset2 == default_asset1 and len(available_assets) > 1:
+        default_asset2 = available_assets[1]
     
     col1, col2 = st.columns(2)
     
-    # ========== TABLA CORRELACIÓN POSITIVA ==========
     with col1:
-        st.markdown("### 📈 Top 10 Pares - Correlación POSITIVA")
-        
-        if len(st.session_state.positive_pairs) > 0:
-            display_pos = st.session_state.positive_pairs.head(10).copy()
-            display_pos['Activo 1'] = display_pos['asset1'].apply(lambda x: ASSETS[x]['label'])
-            display_pos['Activo 2'] = display_pos['asset2'].apply(lambda x: ASSETS[x]['label'])
-            display_pos['InpInvertTrades'] = 'false'
-            
-            table_pos = display_pos[['Activo 1', 'Activo 2', 'score', 'mean_correlation', 
-                                     'signals_per_year', 'win_rate', 'InpInvertTrades']].rename(columns={
-                'score': 'Score',
-                'mean_correlation': 'Corr',
-                'signals_per_year': 'Señales/Año',
-                'win_rate': 'Win Rate %'
-            })
-            
-            st.dataframe(
-                table_pos.style.format({
-                    'Score': '{:.1f}',
-                    'Corr': '{:.3f}',
-                    'Señales/Año': '{:.1f}',
-                    'Win Rate %': '{:.1f}%'
-                }),
-                use_container_width=True
-            )
-            
-            st.metric("Total pares positivos", len(st.session_state.positive_pairs))
-        else:
-            st.warning("No se encontraron pares con correlación positiva")
+        asset1 = st.selectbox(
+            "Activo 1",
+            options=available_assets,
+            index=available_assets.index(default_asset1) if default_asset1 in available_assets else 0,
+            format_func=lambda x: ASSETS[x]['label'],
+            key='detail_asset1'
+        )
     
-    # ========== TABLA CORRELACIÓN NEGATIVA ==========
     with col2:
-        st.markdown("### 📉 Top 10 Pares - Correlación NEGATIVA (Inversa)")
-        
-        if len(st.session_state.negative_pairs) > 0:
-            display_neg = st.session_state.negative_pairs.head(10).copy()
-            display_neg['Activo 1'] = display_neg['asset1'].apply(lambda x: ASSETS[x]['label'])
-            display_neg['Activo 2'] = display_neg['asset2'].apply(lambda x: ASSETS[x]['label'])
-            display_neg['InpInvertTrades'] = 'true'
-            
-            table_neg = display_neg[['Activo 1', 'Activo 2', 'score', 'mean_correlation', 
-                                     'signals_per_year', 'win_rate', 'InpInvertTrades']].rename(columns={
-                'score': 'Score',
-                'mean_correlation': 'Corr',
-                'signals_per_year': 'Señales/Año',
-                'win_rate': 'Win Rate %'
-            })
-            
-            st.dataframe(
-                table_neg.style.format({
-                    'Score': '{:.1f}',
-                    'Corr': '{:.3f}',
-                    'Señales/Año': '{:.1f}',
-                    'Win Rate %': '{:.1f}%'
-                }),
-                use_container_width=True
-            )
-            
-            st.metric("Total pares negativos", len(st.session_state.negative_pairs))
-        else:
-            st.warning("No se encontraron pares con correlación negativa")
-
-# ============================================================================
-# ANÁLISIS DETALLADO (CON BOTÓN)
-# ============================================================================
-
-st.markdown("---")
-st.header("📊 Análisis Detallado de Par")
-
-# Selección de activos
-available_assets = list(st.session_state.all_asset_data.keys())
-
-col1, col2 = st.columns(2)
-
-with col1:
-    asset1 = st.selectbox(
-        "Activo 1",
-        options=available_assets,
-        format_func=lambda x: ASSETS[x]['label'],
-        key='detail_asset1'
-    )
-
-with col2:
-    asset2 = st.selectbox(
-        "Activo 2",
-        options=[a for a in available_assets if a != asset1],
-        format_func=lambda x: ASSETS[x]['label'],
-        key='detail_asset2'
-    )
-
-# Configuración del análisis
-st.markdown("### ⚙️ Configuración del Análisis")
-
-col1, col2, col3 = st.columns(3)
-
-with col1:
-    correlation_type_analysis = st.radio(
-        "Tipo de Correlación a Buscar",
-        options=['Positiva', 'Negativa'],
-        help="**Positiva**: Busca pares que se mueven juntos (correlación >0.5)\n**Negativa**: Busca pares que se mueven en direcciones opuestas (correlación <-0.5)"
-    )
-
-with col2:
-    invert_trades = st.checkbox(
-        "InpInvertTrades",
-        value=False,
-        help="**InpInvertTrades**: Invierte las señales de trading del EA\n- false: Z-score alto = SHORT, Z-score bajo = LONG\n- true: Z-score alto = LONG, Z-score bajo = SHORT"
-    )
-
-with col3:
-    if st.button("🔄 Actualizar Análisis", type="primary", key='btn_analyze'):
-        st.session_state.run_analysis = True
-
-st.info("""
-**📝 Diferencia entre Tipo de Correlación e InpInvertTrades:**
-
-- **Tipo de Correlación**: Determina QUÉ tipo de pares estás buscando
-  - Positiva: Activos que se mueven en la MISMA dirección (ej: S&P 500 y NASDAQ)
-  - Negativa: Activos que se mueven en dirección OPUESTA (ej: USD Index y EUR/USD)
-
-- **InpInvertTrades**: Invierte las SEÑALES de trading del EA
-  - false (default): Si el spread sube mucho (Z-score alto) → Espera que baje → SHORT
-  - true: Si el spread sube mucho (Z-score alto) → Espera que siga subiendo → LONG
-""")
-
-# Solo ejecutar análisis si se presionó el botón
-if st.session_state.get('run_analysis', False):
+        asset2_options = [a for a in available_assets if a != asset1]
+        asset2 = st.selectbox(
+            "Activo 2",
+            options=asset2_options,
+            index=asset2_options.index(default_asset2) if default_asset2 in asset2_options else 0,
+            format_func=lambda x: ASSETS[x]['label'],
+            key='detail_asset2'
+        )
     
-    prices1 = df_all_prices[asset1]
-    prices2 = df_all_prices[asset2]
+    # Configuración del análisis
+    st.markdown("### ⚙️ Configuración del Análisis")
     
-    # Rolling Correlation
-    st.markdown("### 📈 Rolling Correlation")
-    corr_df = calculate_rolling_correlation(df_all_prices, asset1, asset2, window=lookback, step=5)
-    st.plotly_chart(
-        plot_rolling_correlation(corr_df, ASSETS[asset1]['label'], ASSETS[asset2]['label']),
-        use_container_width=True
-    )
-    
-    # Métricas de correlación
-    st.markdown("### 📊 Métricas de Correlación")
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    current_corr = corr_df['correlation'].iloc[-1]
-    mean_corr = corr_df['correlation'].mean()
-    max_corr = corr_df['correlation'].max()
-    min_corr = corr_df['correlation'].min()
-    
-    col1.metric("Correlación Actual", f"{current_corr:.4f}")
-    col2.metric("Correlación Media", f"{mean_corr:.4f}")
-    col3.metric("Máxima", f"{max_corr:.4f}")
-    col4.metric("Mínima", f"{min_corr:.4f}")
-    
-    # Verificar si cumple con el tipo de correlación buscado
-    if correlation_type_analysis == 'Positiva':
-        if mean_corr >= correlation_threshold:
-            st.success(f"✅ Este par tiene correlación POSITIVA fuerte ({mean_corr:.3f} >= {correlation_threshold})")
-        else:
-            st.warning(f"⚠️ Este par NO tiene correlación positiva suficiente ({mean_corr:.3f} < {correlation_threshold})")
-    else:  # Negativa
-        if mean_corr <= -correlation_threshold:
-            st.success(f"✅ Este par tiene correlación NEGATIVA fuerte ({mean_corr:.3f} <= {-correlation_threshold})")
-        else:
-            st.warning(f"⚠️ Este par NO tiene correlación negativa suficiente ({mean_corr:.3f} > {-correlation_threshold})")
-    
-    # Mostrar configuración sugerida para el EA
-    st.markdown("### 💻 Configuración Sugerida para el EA")
-    
-    suggest_invert_based_on_corr = mean_corr < 0
-    
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
-        st.code(f"""
+        correlation_type_analysis = st.radio(
+            "Tipo de Correlación a Buscar",
+            options=['Positiva', 'Negativa'],
+            help="**Positiva**: Pares que se mueven juntos\n**Negativa**: Pares que se mueven en direcciones opuestas"
+        )
+    
+    with col2:
+        invert_trades = st.checkbox(
+            "InpInvertTrades",
+            value=False,
+            help="Invierte las señales de trading del EA"
+        )
+    
+    with col3:
+        if st.button("🔄 Actualizar Análisis", type="primary", key='btn_analyze'):
+            st.session_state.run_analysis = True
+    
+    # Solo ejecutar análisis si se presionó el botón
+    if st.session_state.get('run_analysis', False):
+        
+        prices1 = df_all_prices[asset1]
+        prices2 = df_all_prices[asset2]
+        
+        # Rolling Correlation
+        st.markdown("### 📈 Rolling Correlation")
+        corr_df = calculate_rolling_correlation(df_all_prices, asset1, asset2, window=rolling_window, step=1)
+        st.plotly_chart(
+            plot_rolling_correlation(corr_df, ASSETS[asset1]['label'], ASSETS[asset2]['label']),
+            use_container_width=True
+        )
+        
+        # Métricas de correlación
+        st.markdown("### 📊 Métricas de Correlación")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        current_corr = corr_df['correlation'].iloc[-1]
+        mean_corr = corr_df['correlation'].mean()
+        max_corr = corr_df['correlation'].max()
+        min_corr = corr_df['correlation'].min()
+        
+        col1.metric("Correlación Actual", f"{current_corr:.4f}")
+        col2.metric("Correlación Media", f"{mean_corr:.4f}")
+        col3.metric("Máxima", f"{max_corr:.4f}")
+        col4.metric("Mínima", f"{min_corr:.4f}")
+        
+        # Verificar si cumple con el tipo de correlación buscado
+        if correlation_type_analysis == 'Positiva':
+            if mean_corr >= correlation_threshold:
+                st.success(f"✅ Este par tiene correlación POSITIVA fuerte ({mean_corr:.3f} >= {correlation_threshold})")
+            else:
+                st.warning(f"⚠️ Este par NO tiene correlación positiva suficiente ({mean_corr:.3f} < {correlation_threshold})")
+        else:
+            if mean_corr <= -correlation_threshold:
+                st.success(f"✅ Este par tiene correlación NEGATIVA fuerte ({mean_corr:.3f} <= {-correlation_threshold})")
+            else:
+                st.warning(f"⚠️ Este par NO tiene correlación negativa suficiente ({mean_corr:.3f} > {-correlation_threshold})")
+        
+        # Configuración sugerida para el EA
+        st.markdown("### 💻 Configuración Sugerida para el EA")
+        
+        suggest_invert_based_on_corr = mean_corr < 0
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.code(f"""
 // Configuración Manual Seleccionada:
 InpSecondSymbol = "{ASSETS[asset2]['symbol']}"
 InpInvertTrades = {str(invert_trades).lower()}
@@ -1107,139 +1212,203 @@ InpLookback = {lookback}
 InpZScoreThresholdLong = {zscore_threshold}
 InpZScoreThresholdShort = {zscore_threshold}
 InpCorrelationThreshold = {correlation_threshold}
-        """, language="c++")
-    
-    with col2:
-        st.code(f"""
+            """, language="c++")
+        
+        with col2:
+            st.code(f"""
 // Configuración Sugerida (basada en correlación):
 InpSecondSymbol = "{ASSETS[asset2]['symbol']}"
-InpInvertTrades = {str(suggest_invert_based_on_corr).lower()}  // {"Sugerido" if suggest_invert_based_on_corr == invert_trades else "⚠️ Diferente"}
+InpInvertTrades = {str(suggest_invert_based_on_corr).lower()}
 InpLookback = {lookback}
 InpZScoreThresholdLong = {zscore_threshold}
 InpZScoreThresholdShort = {zscore_threshold}
 InpCorrelationThreshold = {correlation_threshold}
-        """, language="c++")
-    
-    if suggest_invert_based_on_corr != invert_trades:
-        if suggest_invert_based_on_corr:
-            st.warning("⚠️ **Nota**: La correlación es negativa, se sugiere InpInvertTrades = true")
-        else:
-            st.warning("⚠️ **Nota**: La correlación es positiva, se sugiere InpInvertTrades = false")
-    
-    # Comparación de precios
-    st.markdown("### 📉 Comparación de Precios Normalizados")
-    st.plotly_chart(
-        plot_price_comparison(df_all_prices, asset1, asset2, 
-                             ASSETS[asset1]['label'], ASSETS[asset2]['label']),
-        use_container_width=True
-    )
-    
-    # Correlación condicional
-    st.markdown("### 🔍 Correlación Condicional")
-    returns1 = np.log(prices1 / prices1.shift(1)).dropna()
-    returns2 = np.log(prices2 / prices2.shift(1)).dropna()
-    cond_corr = calculate_conditional_correlation(returns1, returns2)
-    
-    st.plotly_chart(plot_conditional_correlation(cond_corr), use_container_width=True)
-    
-    # Distribución Temporal
-    st.markdown("### 📈 Distribución Temporal")
-    
-    positive = (corr_df['correlation'] > 0).sum()
-    negative = (corr_df['correlation'] < 0).sum()
-    strong_pos = (corr_df['correlation'] > 0.5).sum()
-    strong_neg = (corr_df['correlation'] < -0.5).sum()
-    total = len(corr_df)
-    
-    col1, col2, col3, col4 = st.columns(4)
-    
-    col1.metric("% Positiva", f"{positive/total*100:.1f}%")
-    col2.metric("% Negativa", f"{negative/total*100:.1f}%")
-    col3.metric("% Fuerte Pos (>0.5)", f"{strong_pos/total*100:.1f}%")
-    col4.metric("% Fuerte Neg (<-0.5)", f"{strong_neg/total*100:.1f}%")
-    
-    # Distribución Percentiles
-    st.markdown("### 📊 Distribución Percentiles")
-    
-    percentiles = {
-        'p10': np.percentile(corr_df['correlation'].dropna(), 10),
-        'p25': np.percentile(corr_df['correlation'].dropna(), 25),
-        'p50': np.percentile(corr_df['correlation'].dropna(), 50),
-        'p75': np.percentile(corr_df['correlation'].dropna(), 75),
-        'p90': np.percentile(corr_df['correlation'].dropna(), 90)
-    }
-    
-    col1, col2, col3, col4, col5 = st.columns(5)
-    col1.metric("P10", f"{percentiles['p10']:.3f}")
-    col2.metric("P25", f"{percentiles['p25']:.3f}")
-    col3.metric("P50 (Mediana)", f"{percentiles['p50']:.3f}")
-    col4.metric("P75", f"{percentiles['p75']:.3f}")
-    col5.metric("P90", f"{percentiles['p90']:.3f}")
-    
-    # Estabilidad de Correlación
-    st.markdown("### 🎯 Estabilidad de Correlación")
-    
-    corr_series = pd.Series(
-        corr_df['correlation'].values,
-        index=corr_df['date']
-    )
-    
-    rolling_std = corr_series.rolling(60).std()
-    rolling_mean = corr_series.rolling(60).mean()
-    cv = (rolling_std / rolling_mean.abs()).replace([np.inf, -np.inf], np.nan)
-    
-    stability_df = pd.DataFrame({
-        'corr_std': rolling_std,
-        'corr_mean': rolling_mean,
-        'stability_cv': cv
-    })
-    
-    st.plotly_chart(plot_correlation_stability(stability_df), use_container_width=True)
-    
-    stability = calculate_correlation_stability(corr_series, window=60)
-    
-    col1, col2, col3 = st.columns(3)
-    col1.metric("CV Medio", f"{stability['mean_cv']:.3f}")
-    col2.metric("CV Actual", f"{stability['current_cv']:.3f}")
-    col3.metric("Desv. Std Corr", f"{stability['std_corr']:.3f}")
-    
-    # Puntos de Cambio de Régimen
-    st.markdown("### ⚡ Puntos de Cambio de Régimen")
-    
-    breakpoints = detect_regime_changes(corr_series, threshold=0.3)
-    
-    if len(breakpoints) > 0:
-        st.warning(f"⚠️ Detectados {len(breakpoints)} cambios significativos")
-        st.plotly_chart(plot_regime_changes(corr_series, threshold=0.3), use_container_width=True)
+            """, language="c++")
         
-        bp_df = pd.DataFrame({
-            'Fecha': breakpoints.index,
-            'Cambio Absoluto': breakpoints.values
-        }).sort_values('Cambio Absoluto', ascending=False).head(10)
+        # Comparación de precios
+        st.markdown("### 📉 Comparación de Precios Normalizados")
+        st.plotly_chart(
+            plot_price_comparison(df_all_prices, asset1, asset2, 
+                                 ASSETS[asset1]['label'], ASSETS[asset2]['label']),
+            use_container_width=True
+        )
         
-        st.dataframe(bp_df, use_container_width=True)
+        # Correlación condicional
+        st.markdown("### 🔍 Correlación Condicional")
+        returns1 = np.log(prices1 / prices1.shift(1)).dropna()
+        returns2 = np.log(prices2 / prices2.shift(1)).dropna()
+        cond_corr = calculate_conditional_correlation(returns1, returns2)
+        
+        st.plotly_chart(plot_conditional_correlation(cond_corr), use_container_width=True)
+        
+        # Distribución Temporal
+        st.markdown("### 📈 Distribución Temporal")
+        
+        positive = (corr_df['correlation'] > 0).sum()
+        negative = (corr_df['correlation'] < 0).sum()
+        strong_pos = (corr_df['correlation'] > 0.5).sum()
+        strong_neg = (corr_df['correlation'] < -0.5).sum()
+        total = len(corr_df)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric("% Positiva", f"{positive/total*100:.1f}%")
+        col2.metric("% Negativa", f"{negative/total*100:.1f}%")
+        col3.metric("% Fuerte Pos (>0.5)", f"{strong_pos/total*100:.1f}%")
+        col4.metric("% Fuerte Neg (<-0.5)", f"{strong_neg/total*100:.1f}%")
+        
+        # Estabilidad de Correlación
+        st.markdown("### 🎯 Estabilidad de Correlación")
+        
+        corr_series = pd.Series(
+            corr_df['correlation'].values,
+            index=corr_df['date']
+        )
+        
+        rolling_std = corr_series.rolling(60).std()
+        rolling_mean = corr_series.rolling(60).mean()
+        cv = (rolling_std / rolling_mean.abs()).replace([np.inf, -np.inf], np.nan)
+        
+        stability_df = pd.DataFrame({
+            'corr_std': rolling_std,
+            'corr_mean': rolling_mean,
+            'stability_cv': cv
+        })
+        
+        st.plotly_chart(plot_correlation_stability(stability_df), use_container_width=True)
+        
+        stability = calculate_correlation_stability(corr_series, window=60)
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("CV Medio", f"{stability['mean_cv']:.3f}")
+        col2.metric("CV Actual", f"{stability['current_cv']:.3f}")
+        col3.metric("Desv. Std Corr", f"{stability['std_corr']:.3f}")
+        
+        # Resetear flag
+        st.session_state.run_analysis = False
+    
     else:
-        st.success("✅ Correlación relativamente estable (sin cambios abruptos)")
-    
-    # Resetear flag
-    st.session_state.run_analysis = False
+        st.info("👆 Configura el análisis y presiona **'🔄 Actualizar Análisis'** para ver los resultados")
 
-else:
-    st.info("👆 Selecciona los activos, configura el tipo de correlación y presiona **'🔄 Actualizar Análisis'** para ver los resultados")
+# ============================================================================
+# TAB 3: ANÁLISIS DETALLADO TOP PARES
+# ============================================================================
+
+with tab3:
+    st.header("📈 Análisis Detallado Top Pares")
+    
+    if 'positive_pairs' in st.session_state and 'negative_pairs' in st.session_state:
+        
+        # Rolling Correlation Top 10 Positivos
+        st.markdown("### 📈 Rolling Correlation - Top 10 Pares Positivos")
+        
+        if len(st.session_state.positive_pairs) > 0:
+            top_pos = st.session_state.positive_pairs.head(10).to_dict('records')
+            
+            with st.spinner("Generando gráficos de correlación..."):
+                fig_pos = plot_multiple_rolling_correlations(df_all_prices, top_pos, window=rolling_window)
+                st.plotly_chart(fig_pos, use_container_width=True)
+        else:
+            st.info("No hay pares con correlación positiva")
+        
+        st.markdown("---")
+        
+        # Rolling Correlation Top 10 Negativos
+        st.markdown("### 📉 Rolling Correlation - Top 10 Pares Negativos")
+        
+        if len(st.session_state.negative_pairs) > 0:
+            top_neg = st.session_state.negative_pairs.head(10).to_dict('records')
+            
+            with st.spinner("Generando gráficos de correlación..."):
+                fig_neg = plot_multiple_rolling_correlations(df_all_prices, top_neg, window=rolling_window)
+                st.plotly_chart(fig_neg, use_container_width=True)
+        else:
+            st.info("No hay pares con correlación negativa")
+        
+        st.markdown("---")
+        
+        # Comparación de Métricas
+        st.markdown("### 📊 Comparación de Métricas - Todos los Pares Encontrados")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if len(st.session_state.positive_pairs) > 0:
+                st.markdown("#### 📈 Pares Positivos")
+                
+                # Gráfico de Score vs Win Rate
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=st.session_state.positive_pairs['score'],
+                    y=st.session_state.positive_pairs['win_rate'],
+                    mode='markers',
+                    marker=dict(
+                        size=st.session_state.positive_pairs['signals_per_year'] / 2,
+                        color=st.session_state.positive_pairs['hurst'],
+                        colorscale='Viridis',
+                        showscale=True,
+                        colorbar=dict(title="Hurst")
+                    ),
+                    text=[f"{ASSETS[row['asset1']]['label']} / {ASSETS[row['asset2']]['label']}" 
+                          for _, row in st.session_state.positive_pairs.iterrows()],
+                    hovertemplate='<b>%{text}</b><br>Score: %{x:.1f}<br>Win Rate: %{y:.1f}%<extra></extra>'
+                ))
+                
+                fig.update_layout(
+                    title='Score vs Win Rate (tamaño = Señales/Año)',
+                    xaxis_title='Score',
+                    yaxis_title='Win Rate %',
+                    template='plotly_dark',
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            if len(st.session_state.negative_pairs) > 0:
+                st.markdown("#### 📉 Pares Negativos")
+                
+                # Gráfico de Score vs Win Rate
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=st.session_state.negative_pairs['score'],
+                    y=st.session_state.negative_pairs['win_rate'],
+                    mode='markers',
+                    marker=dict(
+                        size=st.session_state.negative_pairs['signals_per_year'] / 2,
+                        color=st.session_state.negative_pairs['hurst'],
+                        colorscale='Plasma',
+                        showscale=True,
+                        colorbar=dict(title="Hurst")
+                    ),
+                    text=[f"{ASSETS[row['asset1']]['label']} / {ASSETS[row['asset2']]['label']}" 
+                          for _, row in st.session_state.negative_pairs.iterrows()],
+                    hovertemplate='<b>%{text}</b><br>Score: %{x:.1f}<br>Win Rate: %{y:.1f}%<extra></extra>'
+                ))
+                
+                fig.update_layout(
+                    title='Score vs Win Rate (tamaño = Señales/Año)',
+                    xaxis_title='Score',
+                    yaxis_title='Win Rate %',
+                    template='plotly_dark',
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+    
+    else:
+        st.info("👆 Primero ejecuta la búsqueda de pares en la pestaña 'Búsqueda de Pares'")
 
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 Guía Rápida")
 st.sidebar.markdown("""
-**Botones de Control:**
-- 🚀 **Buscar Pares**: Analiza TODOS los activos
-- 🔄 **Actualizar Análisis**: Actualiza análisis individual
+**Flujo de Trabajo:**
+1. 🔍 **Búsqueda**: Encuentra pares
+2. 📊 **Individual**: Analiza par específico
+3. 📈 **Top Pares**: Compara gráficos
 
-**Configuración:**
-- **Tipo de Correlación**: QUÉ pares buscar
-- **InpInvertTrades**: CÓMO tradear las señales
-
-**No se actualiza automáticamente** - debes presionar los botones manualmente
+**Rolling Window:** Ahora configurable desde 10 días (actualización diaria)
 """)
 
 st.sidebar.markdown("---")
@@ -1249,7 +1418,6 @@ st.sidebar.markdown(f"""
 - 💱 Forex: {len([a for a in ASSETS.values() if a['category'] == 'Forex'])}
 - 🏆 Commodities: {len([a for a in ASSETS.values() if a['category'] == 'Commodities'])}
 - ₿ Crypto: {len([a for a in ASSETS.values() if a['category'] == 'Crypto'])}
-- 📈 Volatility: {len([a for a in ASSETS.values() if a['category'] == 'Volatility'])}
 """)
 
 st.sidebar.success("✨ Diseñado para EA MQL5")
