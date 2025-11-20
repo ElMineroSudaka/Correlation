@@ -80,53 +80,63 @@ def get_cache_info():
     return None
 
 # ============================================================================
-# CONFIGURACIÓN DE ACTIVOS (120+ activos)
+# CONFIGURACIÓN DE ACTIVOS - SIMPLIFICADA
 # ============================================================================
 ASSETS = {
-    # ÍNDICES US
-    'sp500': {'label': 'S&P 500', 'symbol': '^GSPC', 'category': 'US Equity'},
-    'nasdaq': {'label': 'NASDAQ', 'symbol': '^IXIC', 'category': 'US Equity'},
-    'dow': {'label': 'Dow Jones', 'symbol': '^DJI', 'category': 'US Equity'},
-    'russell': {'label': 'Russell 2000', 'symbol': '^RUT', 'category': 'US Equity'},
+    # ========== ÍNDICES GLOBALES ==========
+    # US
+    'us500': {'label': 'US SPX 500 (S&P 500)', 'symbol': '^GSPC', 'category': 'Indices'},
+    'us30': {'label': 'US Wall Street 30 (Dow Jones)', 'symbol': '^DJI', 'category': 'Indices'},
+    'ustec': {'label': 'US Tech 100 (NASDAQ)', 'symbol': '^IXIC', 'category': 'Indices'},
+    'russell': {'label': 'Russell 2000', 'symbol': '^RUT', 'category': 'Indices'},
     
-    # ÍNDICES EUROPA
-    'ftse': {'label': 'FTSE 100', 'symbol': '^FTSE', 'category': 'Europe Equity'},
-    'dax': {'label': 'DAX', 'symbol': '^GDAXI', 'category': 'Europe Equity'},
-    'cac40': {'label': 'CAC 40', 'symbol': '^FCHI', 'category': 'Europe Equity'},
-    'stoxx50': {'label': 'Euro Stoxx 50', 'symbol': '^STOXX50E', 'category': 'Europe Equity'},
+    # Europa
+    'uk100': {'label': 'UK 100 (FTSE)', 'symbol': '^FTSE', 'category': 'Indices'},
+    'de30': {'label': 'Germany 30 (DAX)', 'symbol': '^GDAXI', 'category': 'Indices'},
+    'fr40': {'label': 'France 40 (CAC 40)', 'symbol': '^FCHI', 'category': 'Indices'},
+    'stoxx50': {'label': 'EU Stocks 50 (Euro Stoxx)', 'symbol': '^STOXX50E', 'category': 'Indices'},
     
-    # ÍNDICES ASIA
-    'nikkei': {'label': 'Nikkei 225', 'symbol': '^N225', 'category': 'Asia Equity'},
-    'hang_seng': {'label': 'Hang Seng', 'symbol': '^HSI', 'category': 'Asia Equity'},
-    'sensex': {'label': 'BSE Sensex', 'symbol': '^BSESN', 'category': 'Asia Equity'},
+    # Asia-Pacífico
+    'jp225': {'label': 'Japan 225 (Nikkei)', 'symbol': '^N225', 'category': 'Indices'},
+    'hk50': {'label': 'Hong Kong 50 (Hang Seng)', 'symbol': '^HSI', 'category': 'Indices'},
+    'aus200': {'label': 'Australia 200 (ASX)', 'symbol': '^AXJO', 'category': 'Indices'},
+    'in50': {'label': 'India 50 (Nifty)', 'symbol': '^NSEI', 'category': 'Indices'},
     
-    # DIVISAS
-    'dxy': {'label': 'DXY (Dólar Index)', 'symbol': 'DX-Y.NYB', 'category': 'FX'},
-    'eurusd': {'label': 'EUR/USD', 'symbol': 'EURUSD=X', 'category': 'FX'},
-    'gbpusd': {'label': 'GBP/USD', 'symbol': 'GBPUSD=X', 'category': 'FX'},
-    'usdjpy': {'label': 'USD/JPY', 'symbol': 'JPYUSD=X', 'category': 'FX'},
-    'audusd': {'label': 'AUD/USD', 'symbol': 'AUDUSD=X', 'category': 'FX'},
+    # ========== DIVISAS ==========
+    'dxy': {'label': 'US Dollar Index', 'symbol': 'DX-Y.NYB', 'category': 'Forex'},
+    'eurusd': {'label': 'EUR/USD', 'symbol': 'EURUSD=X', 'category': 'Forex'},
+    'gbpusd': {'label': 'GBP/USD', 'symbol': 'GBPUSD=X', 'category': 'Forex'},
+    'usdjpy': {'label': 'USD/JPY', 'symbol': 'JPYUSD=X', 'category': 'Forex'},
+    'audusd': {'label': 'AUD/USD', 'symbol': 'AUDUSD=X', 'category': 'Forex'},
+    'usdcad': {'label': 'USD/CAD', 'symbol': 'CADUSD=X', 'category': 'Forex'},
+    'usdchf': {'label': 'USD/CHF', 'symbol': 'CHFUSD=X', 'category': 'Forex'},
+    'nzdusd': {'label': 'NZD/USD', 'symbol': 'NZDUSD=X', 'category': 'Forex'},
     
-    # METALES
-    'gold': {'label': 'Oro (GC)', 'symbol': 'GC=F', 'category': 'Metals'},
-    'silver': {'label': 'Plata (SI)', 'symbol': 'SI=F', 'category': 'Metals'},
-    'copper': {'label': 'Cobre', 'symbol': 'HG=F', 'category': 'Metals'},
-    'gld': {'label': 'GLD (Gold ETF)', 'symbol': 'GLD', 'category': 'Metals'},
-    'slv': {'label': 'SLV (Silver ETF)', 'symbol': 'SLV', 'category': 'Metals'},
+    # ========== METALES PRECIOSOS ==========
+    'gold': {'label': 'Gold (GC)', 'symbol': 'GC=F', 'category': 'Commodities'},
+    'silver': {'label': 'Silver (SI)', 'symbol': 'SI=F', 'category': 'Commodities'},
+    'copper': {'label': 'Copper (HG)', 'symbol': 'HG=F', 'category': 'Commodities'},
+    'platinum': {'label': 'Platinum (PL)', 'symbol': 'PL=F', 'category': 'Commodities'},
     
-    # COMMODITIES
-    'oil': {'label': 'Petróleo WTI', 'symbol': 'CL=F', 'category': 'Energy'},
-    'natgas': {'label': 'Gas Natural', 'symbol': 'NG=F', 'category': 'Energy'},
-    'corn': {'label': 'Maíz', 'symbol': 'ZC=F', 'category': 'Agriculture'},
-    'wheat': {'label': 'Trigo', 'symbol': 'ZW=F', 'category': 'Agriculture'},
-    'soybeans': {'label': 'Soja', 'symbol': 'ZS=F', 'category': 'Agriculture'},
+    # ========== ENERGÍA ==========
+    'oil': {'label': 'Crude Oil WTI', 'symbol': 'CL=F', 'category': 'Commodities'},
+    'brent': {'label': 'Brent Crude Oil', 'symbol': 'BZ=F', 'category': 'Commodities'},
+    'natgas': {'label': 'Natural Gas', 'symbol': 'NG=F', 'category': 'Commodities'},
     
-    # VOLATILIDAD
-    'vix': {'label': 'VIX (S&P 500 Vol)', 'symbol': '^VIX', 'category': 'Volatility'},
+    # ========== AGRICULTURA ==========
+    'corn': {'label': 'Corn', 'symbol': 'ZC=F', 'category': 'Commodities'},
+    'wheat': {'label': 'Wheat', 'symbol': 'ZW=F', 'category': 'Commodities'},
+    'soybeans': {'label': 'Soybeans', 'symbol': 'ZS=F', 'category': 'Commodities'},
+    'sugar': {'label': 'Sugar', 'symbol': 'SB=F', 'category': 'Commodities'},
+    'coffee': {'label': 'Coffee', 'symbol': 'KC=F', 'category': 'Commodities'},
+    'cotton': {'label': 'Cotton', 'symbol': 'CT=F', 'category': 'Commodities'},
     
-    # CRYPTO
+    # ========== CRIPTOMONEDAS ==========
     'btc': {'label': 'Bitcoin', 'symbol': 'BTC-USD', 'category': 'Crypto'},
     'eth': {'label': 'Ethereum', 'symbol': 'ETH-USD', 'category': 'Crypto'},
+    
+    # ========== VOLATILIDAD ==========
+    'vix': {'label': 'VIX (S&P 500 Volatility)', 'symbol': '^VIX', 'category': 'Volatility'},
 }
 
 # ============================================================================
@@ -215,7 +225,10 @@ def update_existing_data(existing_data, existing_metadata, delay=2):
     total = len(existing_data)
     
     for idx, (key, old_data) in enumerate(existing_data.items()):
-        asset_info = ASSETS[key]
+        asset_info = ASSETS.get(key)
+        if not asset_info:
+            continue
+            
         symbol = asset_info['symbol']
         
         status_text.text(f"🔄 Actualizando {asset_info['label']} ({idx+1}/{total})...")
@@ -287,7 +300,7 @@ def merge_asset_data(data_dict):
     return df
 
 # ============================================================================
-# FUNCIONES ESPECÍFICAS PARA EL EA (MISMO CÓDIGO)
+# FUNCIONES ESPECÍFICAS PARA EL EA
 # ============================================================================
 
 def calculate_log_ratio_spread(prices1, prices2):
@@ -353,25 +366,22 @@ def simulate_ea_signals(prices1, prices2, zscore_threshold=3.3, lookback=100, co
     signal_durations = signals[signals['any_signal']].groupby(signal_groups).size()
     avg_duration = signal_durations.mean() if len(signal_durations) > 0 else 0
     
-    # Win rate simulado (si el spread revirtió a la media después de señal)
+    # Win rate simulado
     win_count = 0
     total_trades = 0
     
     for idx in signals[signals['any_signal']].index:
         idx_pos = common_idx.get_loc(idx)
         
-        # Mirar próximos 30 días
         if idx_pos + 30 < len(common_idx):
             future_zscore = zscore.iloc[idx_pos:idx_pos+30]
             current_zscore = zscore.loc[idx]
             
-            # Si era LONG signal (Z alto), gana si Z baja
             if signals.loc[idx, 'long_signal']:
                 if future_zscore.min() < current_zscore * 0.5:
                     win_count += 1
                 total_trades += 1
             
-            # Si era SHORT signal (Z bajo), gana si Z sube
             elif signals.loc[idx, 'short_signal']:
                 if future_zscore.max() > current_zscore * 0.5:
                     win_count += 1
@@ -465,15 +475,12 @@ def detect_regime_changes(corr_series, threshold=0.3):
 
 def calculate_conditional_correlation(returns1, returns2):
     """Correlación en diferentes condiciones de mercado"""
-    # Correlación durante mercados alcistas
     mask_positive = (returns1 > 0) & (returns2 > 0)
     corr_positive = returns1[mask_positive].corr(returns2[mask_positive])
     
-    # Correlación durante mercados bajistas
     mask_negative = (returns1 < 0) & (returns2 < 0)
     corr_negative = returns1[mask_negative].corr(returns2[mask_negative])
     
-    # Correlación durante alta volatilidad
     vol_threshold = returns1.std() * 2
     mask_crisis = (returns1.abs() > vol_threshold) | (returns2.abs() > vol_threshold)
     corr_crisis = returns1[mask_crisis].corr(returns2[mask_crisis])
@@ -508,7 +515,6 @@ def find_best_pairs_for_ea(df, min_correlation=0.5, min_signals_per_year=10,
             prices1 = df[asset1].dropna()
             prices2 = df[asset2].dropna()
             
-            # Índice común (mínimo 1 año de datos)
             common_idx = prices1.index.intersection(prices2.index)
             if len(common_idx) < 252:
                 continue
@@ -516,35 +522,27 @@ def find_best_pairs_for_ea(df, min_correlation=0.5, min_signals_per_year=10,
             p1 = prices1.loc[common_idx]
             p2 = prices2.loc[common_idx]
             
-            # Simular señales del EA
             signals, stats, zscore, corr, spread = simulate_ea_signals(
                 p1, p2, zscore_threshold, lookback, min_correlation
             )
             
-            # Filtros básicos
             if stats['signals_per_year'] < min_signals_per_year:
                 continue
             
-            # Tests estadísticos
             adf_result = adf_test(spread)
             hurst = calculate_hurst_exponent(spread.dropna())
             half_life = calculate_half_life(spread)
             coint_result = test_cointegration(p1, p2)
             
-            # Estabilidad de correlación
             stability = calculate_correlation_stability(corr)
             
             if stability['mean_cv'] > max_cv:
                 continue
             
-            # Correlación media
             mean_corr = corr.mean()
-            
-            # Determinar si debe usar InpInvertTrades
             positive_corr_pct = (corr > 0).sum() / len(corr) * 100
             suggest_invert = positive_corr_pct < 50
             
-            # Correlación condicional
             returns1 = np.log(p1 / p1.shift(1)).dropna()
             returns2 = np.log(p2 / p2.shift(1)).dropna()
             cond_corr = calculate_conditional_correlation(returns1, returns2)
@@ -552,7 +550,6 @@ def find_best_pairs_for_ea(df, min_correlation=0.5, min_signals_per_year=10,
             # SCORE COMPUESTO
             score = 0
             
-            # 30 pts: Estabilidad de correlación
             if stability['mean_cv'] < 0.2:
                 score += 30
             elif stability['mean_cv'] < 0.3:
@@ -560,7 +557,6 @@ def find_best_pairs_for_ea(df, min_correlation=0.5, min_signals_per_year=10,
             else:
                 score += 10
             
-            # 25 pts: Frecuencia de señales
             if stats['signals_per_year'] > 50:
                 score += 25
             elif stats['signals_per_year'] > 30:
@@ -570,7 +566,6 @@ def find_best_pairs_for_ea(df, min_correlation=0.5, min_signals_per_year=10,
             else:
                 score += 10
             
-            # 20 pts: Mean reversion (Hurst)
             if hurst < 0.4:
                 score += 20
             elif hurst < 0.5:
@@ -578,11 +573,9 @@ def find_best_pairs_for_ea(df, min_correlation=0.5, min_signals_per_year=10,
             else:
                 score += 5
             
-            # 15 pts: Estacionariedad
             if adf_result['stationary']:
                 score += 15
             
-            # 10 pts: Win rate
             if stats['win_rate'] > 60:
                 score += 10
             elif stats['win_rate'] > 50:
@@ -624,7 +617,7 @@ def find_best_pairs_for_ea(df, min_correlation=0.5, min_signals_per_year=10,
     return pd.DataFrame(candidates).sort_values('score', ascending=False)
 
 # ============================================================================
-# FUNCIONES DE VISUALIZACIÓN (MISMO CÓDIGO - ABREVIADO)
+# FUNCIONES DE VISUALIZACIÓN
 # ============================================================================
 
 def plot_pair_analysis(prices1, prices2, asset1_name, asset2_name, lookback=100, zscore_threshold=3.3):
@@ -645,7 +638,6 @@ def plot_pair_analysis(prices1, prices2, asset1_name, asset2_name, lookback=100,
         row_heights=[0.25, 0.25, 0.25, 0.25]
     )
     
-    # Precios normalizados
     norm1 = (prices1 / prices1.iloc[0]) * 100
     norm2 = (prices2 / prices2.iloc[0]) * 100
     
@@ -654,18 +646,15 @@ def plot_pair_analysis(prices1, prices2, asset1_name, asset2_name, lookback=100,
     fig.add_trace(go.Scatter(x=norm2.index, y=norm2, name=asset2_name,
                              line=dict(color='#3b82f6', width=2)), row=1, col=1)
     
-    # Correlación
     fig.add_trace(go.Scatter(x=corr.index, y=corr, name='Correlation',
                              line=dict(color='#8b5cf6', width=2)), row=2, col=1)
     fig.add_hline(y=0.5, line_dash="dash", line_color="#10b981", opacity=0.5, row=2, col=1)
     fig.add_hline(y=-0.5, line_dash="dash", line_color="#ef4444", opacity=0.5, row=2, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color="#666666", row=2, col=1)
     
-    # Spread
     fig.add_trace(go.Scatter(x=spread.index, y=spread, name='Spread',
                              line=dict(color='#f59e0b', width=2)), row=3, col=1)
     
-    # Z-Score con señales
     fig.add_trace(go.Scatter(x=zscore.index, y=zscore, name='Z-Score',
                              line=dict(color='#06b6d4', width=2)), row=4, col=1)
     
@@ -882,23 +871,27 @@ else:
 
 # Si no hay datos cargados, detener aquí
 if 'all_asset_data' not in st.session_state:
-    st.info("""
+    st.info(f"""
     ### 👋 Bienvenido al EA Pairs Trading Candidate Finder
     
     **Esta herramienta está diseñada específicamente para tu Expert Advisor de MQL5**
     
+    **Activos disponibles ({len(ASSETS)}):**
+    - 📊 {len([a for a in ASSETS.values() if a['category'] == 'Indices'])} Índices globales (US, Europa, Asia)
+    - 💱 {len([a for a in ASSETS.values() if a['category'] == 'Forex'])} Pares de divisas
+    - 🏆 {len([a for a in ASSETS.values() if a['category'] == 'Commodities'])} Commodities (metales, energía, agricultura)
+    - ₿ {len([a for a in ASSETS.values() if a['category'] == 'Crypto'])} Criptomonedas
+    
     **Para comenzar:**
     1. Presiona "📥 Descargar Todos los Activos" en el sidebar
-    2. Los datos se guardarán en disco
-    3. Solo tendrás que actualizarlos periódicamente
+    2. Los datos se guardarán en disco (solo 1 vez)
+    3. Después solo tendrás que actualizarlos
     
     **Características:**
-    - 🎯 Simula señales del EA (log-ratio spread + Z-score)
-    - 📊 Calcula frecuencia de señales y win rate
-    - 🔍 Busca pares con correlación estable
+    - 🎯 Simula señales del EA (log-ratio + Z-score)
+    - 📊 Win rate y frecuencia de señales
     - 💡 Sugiere parámetros óptimos
-    - 📈 Análisis de mean reversion y estacionariedad
-    - 💾 **Cache persistente** - descarga 1 vez, usa siempre
+    - 💾 Cache persistente
     """)
     st.stop()
 
@@ -912,22 +905,27 @@ st.sidebar.header("⚙️ Configuración")
 # Filtrar por categoría
 categories = list(set([ASSETS[k]['category'] for k in ASSETS.keys()]))
 categories.sort()
+
 selected_categories = st.sidebar.multiselect(
     "Categorías",
     options=categories,
-    default=['US Equity', 'US ETF', 'Sector ETF']
+    default=[c for c in ['Indices', 'Commodities', 'Crypto'] if c in categories]
 )
 
 available_assets = [k for k in st.session_state.all_asset_data.keys() 
                    if ASSETS[k]['category'] in selected_categories]
 
 st.sidebar.subheader("Activos Seleccionados")
-default_assets = ['sp500', 'nasdaq', 'qqq', 'spy', 'xlk', 'xlf', 'xle', 'xlv'] if len(available_assets) >= 8 else available_assets[:5]
+
+if len(available_assets) > 0:
+    default_selection = available_assets[:min(8, len(available_assets))]
+else:
+    default_selection = []
 
 selected_assets = st.sidebar.multiselect(
     "Activos para análisis",
     options=available_assets,
-    default=[a for a in default_assets if a in available_assets],
+    default=default_selection,
     format_func=lambda x: ASSETS[x]['label']
 )
 
@@ -958,7 +956,7 @@ if df_prices.empty:
 st.success(f"✅ {len(df_prices)} días | {df_prices.index[0].date()} → {df_prices.index[-1].date()}")
 
 # ============================================================================
-# TABS (RESTO DEL CÓDIGO IGUAL - ABREVIADO)
+# TABS
 # ============================================================================
 
 tab1, tab2, tab3, tab4 = st.tabs([
@@ -995,7 +993,6 @@ with tab1:
         if len(best_pairs) > 0:
             st.success(f"✅ Encontrados {len(best_pairs)} pares")
             
-            # Ranking gráfico (código completo igual que antes)
             top_pairs = best_pairs.head(15).copy()
             top_pairs['pair_label'] = top_pairs['asset1'].apply(lambda x: ASSETS[x]['label']) + ' / ' + \
                                       top_pairs['asset2'].apply(lambda x: ASSETS[x]['label'])
@@ -1011,7 +1008,7 @@ with tab1:
             ))
             
             fig.update_layout(
-                title='Ranking de Pares por Score',
+                title='Top 15 Mejores Pares',
                 xaxis_title='Score',
                 yaxis_title='Par',
                 template='plotly_dark',
@@ -1021,20 +1018,86 @@ with tab1:
             
             st.plotly_chart(fig, use_container_width=True)
             
-            # Tabla y análisis detallado (código completo igual que antes - abreviado por espacio)
+            # Tabla detallada
             display_df = best_pairs.head(20).copy()
             display_df['asset1_name'] = display_df['asset1'].apply(lambda x: ASSETS[x]['label'])
             display_df['asset2_name'] = display_df['asset2'].apply(lambda x: ASSETS[x]['label'])
+            display_df['invert_trades'] = display_df['suggest_invert_trades'].apply(lambda x: '✅ YES' if x else '❌ NO')
             
-            st.dataframe(display_df[['asset1_name', 'asset2_name', 'score', 'signals_per_year', 
-                                    'win_rate', 'mean_correlation', 'corr_stability_cv']], 
-                        use_container_width=True)
+            cols_to_show = {
+                'asset1_name': 'Activo 1',
+                'asset2_name': 'Activo 2',
+                'score': 'Score',
+                'signals_per_year': 'Señales/Año',
+                'win_rate': 'Win Rate %',
+                'mean_correlation': 'Corr Media',
+                'corr_stability_cv': 'CV',
+                'hurst': 'Hurst',
+                'stationary': 'Estacionario',
+                'invert_trades': 'InpInvertTrades'
+            }
+            
+            display_table = display_df[list(cols_to_show.keys())].rename(columns=cols_to_show)
+            
+            styled = display_table.style.format({
+                'Score': '{:.1f}',
+                'Señales/Año': '{:.1f}',
+                'Win Rate %': '{:.1f}%',
+                'Corr Media': '{:.3f}',
+                'CV': '{:.3f}',
+                'Hurst': '{:.3f}'
+            })
+            
+            st.dataframe(styled, use_container_width=True, height=600)
+            
+            # Análisis del mejor par
+            st.markdown("---")
+            st.markdown("### 🏆 Análisis del Mejor Par")
+            
+            best = best_pairs.iloc[0]
+            
+            col1, col2 = st.columns([1, 3])
+            
+            with col1:
+                st.metric("Par", f"{ASSETS[best['asset1']]['label']} / {ASSETS[best['asset2']]['label']}")
+                st.metric("Score", f"{best['score']:.1f}")
+                
+                if best['suggest_invert_trades']:
+                    st.error("**InpInvertTrades = true**")
+                    st.caption("Correlación predominantemente negativa")
+                else:
+                    st.success("**InpInvertTrades = false**")
+                    st.caption("Correlación predominantemente positiva")
+            
+            with col2:
+                col_a, col_b, col_c, col_d = st.columns(4)
+                col_a.metric("Señales/Año", f"{best['signals_per_year']:.1f}")
+                col_b.metric("Win Rate", f"{best['win_rate']:.1f}%")
+                col_c.metric("Hurst", f"{best['hurst']:.3f}")
+                col_d.metric("CV", f"{best['corr_stability_cv']:.3f}")
+            
+            # Código sugerido
+            st.markdown("### 💻 Código Sugerido para el EA")
+            
+            st.code(f"""
+InpSecondSymbol = "{ASSETS[best['asset2']]['symbol']}"
+InpInvertTrades = {"true" if best['suggest_invert_trades'] else "false"}
+InpLookback = {lookback}
+InpCorrelationThreshold = {correlation_threshold}
+InpZScoreThresholdLong = {zscore_threshold}
+InpZScoreThresholdShort = {zscore_threshold}
+
+// Resultados esperados:
+// - Señales por año: {best['signals_per_year']:.0f}
+// - Win rate: {best['win_rate']:.1f}%
+// - LONG/SHORT ratio: {best['long_signals']}/{best['short_signals']}
+            """, language="c++")
             
             # Descargar CSV
             csv = best_pairs.to_csv(index=False)
             st.download_button("📥 Descargar CSV", csv, "ea_best_pairs.csv", "text/csv")
         else:
-            st.warning("⚠️ No se encontraron pares")
+            st.warning("⚠️ No se encontraron pares que cumplan los criterios")
 
 with tab2:
     st.subheader("📈 Análisis Individual de Par")
@@ -1063,6 +1126,14 @@ with tab2:
     col5.metric("Win Rate", f"{stats['win_rate']:.1f}%")
     
     st.plotly_chart(fig, use_container_width=True)
+    
+    # Correlación condicional
+    st.markdown("### 🔍 Correlación Condicional")
+    returns1 = np.log(prices1 / prices1.shift(1)).dropna()
+    returns2 = np.log(prices2 / prices2.shift(1)).dropna()
+    cond_corr = calculate_conditional_correlation(returns1, returns2)
+    
+    st.plotly_chart(plot_conditional_correlation(cond_corr), use_container_width=True)
 
 with tab3:
     st.subheader("📊 Análisis Detallado de Correlación")
@@ -1087,10 +1158,20 @@ with tab3:
     
     st.plotly_chart(plot_correlation_analysis(corr, ASSETS[corr_asset1]['label'],
                                               ASSETS[corr_asset2]['label']), use_container_width=True)
+    
+    # Cambios de régimen
+    st.markdown("### ⚡ Cambios de Régimen")
+    breakpoints = detect_regime_changes(corr, threshold=0.3)
+    
+    if len(breakpoints) > 0:
+        st.warning(f"⚠️ Detectados {len(breakpoints)} cambios significativos")
+        st.plotly_chart(plot_regime_changes(corr, threshold=0.3), use_container_width=True)
+    else:
+        st.success("✅ Correlación estable")
 
 with tab4:
     st.subheader("💡 Optimización de Parámetros")
-    st.caption("Encuentra los mejores parámetros para un par específico")
+    st.info("Encuentra los mejores Z-Score y Lookback para un par específico")
     
     col1, col2 = st.columns(2)
     
@@ -1102,23 +1183,18 @@ with tab4:
         opt_asset2 = st.selectbox("Activo 2", [a for a in selected_assets if a != opt_asset1],
                                  format_func=lambda x: ASSETS[x]['label'], key='opt_asset2')
     
-    st.info("Presiona el botón para probar diferentes combinaciones de Z-Score y Lookback")
+    st.caption("Presiona para probar diferentes combinaciones de parámetros")
 
 # Footer
 st.sidebar.markdown("---")
-st.sidebar.markdown("### 📚 Guía de Uso")
-st.sidebar.markdown("""
-**Sistema de Cache:**
-- ✅ Descarga 1 vez
-- 🔄 Actualiza periódicamente
-- 💾 Datos guardados en disco
-
-**Métricas Clave:**
-- **Score**: >70 = excelente
-- **Win Rate**: >60% = bueno
-- **Hurst**: <0.5 = mean reversion
-- **CV**: <0.3 = estable
-- **Señales/año**: >20 = OK
+st.sidebar.markdown("### 📚 Categorías")
+st.sidebar.markdown(f"""
+**Activos ({len(ASSETS)}):**
+- 📊 Indices: {len([a for a in ASSETS.values() if a['category'] == 'Indices'])}
+- 💱 Forex: {len([a for a in ASSETS.values() if a['category'] == 'Forex'])}
+- 🏆 Commodities: {len([a for a in ASSETS.values() if a['category'] == 'Commodities'])}
+- ₿ Crypto: {len([a for a in ASSETS.values() if a['category'] == 'Crypto'])}
+- 📈 Volatility: {len([a for a in ASSETS.values() if a['category'] == 'Volatility'])}
 """)
 
-st.sidebar.success("✨ Diseñado para tu EA de MQL5")
+st.sidebar.success("✨ Diseñado para EA MQL5")
