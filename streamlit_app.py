@@ -97,7 +97,7 @@ ASSETS = {
     'in50': {'label': 'India 50 (Nifty)', 'symbol': '^NSEI', 'category': 'Indices'},
     
     # ========== DIVISAS ==========
-    'dxy': {'label': 'US Dollar Index', 'symbol': 'DX-Y.NYB', 'category': 'Forex'},
+    'dxy': {'label': 'US Dollar Index (DXY)', 'symbol': 'DX-Y.NYB', 'category': 'Forex'},
     'eurusd': {'label': 'EUR/USD', 'symbol': 'EURUSD=X', 'category': 'Forex'},
     'gbpusd': {'label': 'GBP/USD', 'symbol': 'GBPUSD=X', 'category': 'Forex'},
     'usdjpy': {'label': 'USD/JPY', 'symbol': 'JPYUSD=X', 'category': 'Forex'},
@@ -133,11 +133,11 @@ ASSETS = {
 }
 
 # ============================================================================
-# FUNCIONES DE DESCARGA
+# FUNCIONES DE DESCARGA (CON MÁS DATOS HISTÓRICOS)
 # ============================================================================
 
-def fetch_asset_data(symbol, start_date='2020-01-01', end_date=None):
-    """Descarga datos históricos de un activo"""
+def fetch_asset_data(symbol, start_date='2015-01-01', end_date=None):
+    """Descarga datos históricos de un activo - EXTENDIDO A 10 AÑOS"""
     if end_date is None:
         end_date = datetime.now().strftime('%Y-%m-%d')
     
@@ -150,8 +150,8 @@ def fetch_asset_data(symbol, start_date='2020-01-01', end_date=None):
     except Exception as e:
         return None
 
-def download_all_assets(delay=3, start_date='2020-01-01'):
-    """Descarga TODOS los activos con delay"""
+def download_all_assets(delay=3, start_date='2015-01-01'):
+    """Descarga TODOS los activos con delay - 10 AÑOS DE HISTORIA"""
     all_data = {}
     failed = []
     
@@ -412,6 +412,110 @@ def calculate_conditional_correlation(returns1, returns2):
         'normal': returns1.corr(returns2)
     }
 
+# ============================================================================
+# FUNCIONES DE ANÁLISIS DE ESTACIONALIDAD
+# ============================================================================
+
+def analyze_seasonality(df, asset1, asset2, lookback=100):
+    """Analiza patrones estacionales en la correlación y el spread"""
+    prices1 = df[asset1]
+    prices2 = df[asset2]
+    
+    # Calcular correlación y spread
+    spread = calculate_log_ratio_spread(prices1, prices2)
+    corr_rolling = calculate_correlation(prices1, prices2, window=lookback)
+    
+    # Crear DataFrame con fechas
+    spread_df = spread.to_frame('spread')
+    spread_df['month'] = spread_df.index.month
+    spread_df['quarter'] = spread_df.index.quarter
+    spread_df['year'] = spread_df.index.year
+    spread_df['day_of_year'] = spread_df.index.dayofyear
+    spread_df['volatility'] = spread_df['spread'].rolling(30).std()
+    
+    corr_df = corr_rolling.to_frame('correlation')
+    corr_df['month'] = corr_df.index.month
+    corr_df['quarter'] = corr_df.index.quarter
+    corr_df['year'] = corr_df.index.year
+    
+    # Análisis mensual
+    monthly_corr = corr_df.groupby('month')['correlation'].agg(['mean', 'std', 'min', 'max'])
+    monthly_spread_vol = spread_df.groupby('month')['volatility'].mean()
+    
+    # Análisis trimestral
+    quarterly_corr = corr_df.groupby('quarter')['correlation'].agg(['mean', 'std', 'min', 'max'])
+    quarterly_spread_vol = spread_df.groupby('quarter')['volatility'].mean()
+    
+    # Análisis anual
+    yearly_corr = corr_df.groupby('year')['correlation'].agg(['mean', 'std', 'min', 'max'])
+    yearly_spread_vol = spread_df.groupby('year')['volatility'].mean()
+    
+    # Análisis de volatilidad estacional del spread
+    monthly_spread_stats = spread_df.groupby('month')['spread'].agg(['mean', 'std'])
+    
+    return {
+        'monthly_corr': monthly_corr,
+        'monthly_spread_vol': monthly_spread_vol,
+        'monthly_spread_stats': monthly_spread_stats,
+        'quarterly_corr': quarterly_corr,
+        'quarterly_spread_vol': quarterly_spread_vol,
+        'yearly_corr': yearly_corr,
+        'yearly_spread_vol': yearly_spread_vol,
+        'spread_df': spread_df,
+        'corr_df': corr_df
+    }
+
+def calculate_historical_periods(df, asset1, asset2):
+    """Calcula estadísticas por períodos históricos significativos"""
+    prices1 = df[asset1]
+    prices2 = df[asset2]
+    
+    spread = calculate_log_ratio_spread(prices1, prices2)
+    
+    periods = []
+    
+    # Definir períodos históricos relevantes
+    historical_events = [
+        ('2015-2016', '2015-01-01', '2016-12-31', 'Período 2015-2016'),
+        ('2017-2018', '2017-01-01', '2018-12-31', 'Período 2017-2018'),
+        ('2019', '2019-01-01', '2019-12-31', 'Pre-COVID 2019'),
+        ('COVID-2020', '2020-01-01', '2020-12-31', 'COVID-19 2020'),
+        ('2021', '2021-01-01', '2021-12-31', 'Recuperación 2021'),
+        ('2022', '2022-01-01', '2022-12-31', 'Inflación 2022'),
+        ('2023', '2023-01-01', '2023-12-31', 'Normalización 2023'),
+        ('2024-2025', '2024-01-01', '2025-12-31', 'Período 2024-2025'),
+    ]
+    
+    for period_id, start, end, label in historical_events:
+        try:
+            mask = (spread.index >= start) & (spread.index <= end)
+            period_spread = spread[mask]
+            period_p1 = prices1[mask]
+            period_p2 = prices2[mask]
+            
+            if len(period_spread) > 30:  # Mínimo 30 días
+                period_corr = period_p1.corr(period_p2)
+                
+                periods.append({
+                    'period': label,
+                    'start': start,
+                    'end': end,
+                    'days': len(period_spread),
+                    'correlation': period_corr,
+                    'spread_mean': period_spread.mean(),
+                    'spread_std': period_spread.std(),
+                    'spread_min': period_spread.min(),
+                    'spread_max': period_spread.max()
+                })
+        except:
+            continue
+    
+    return pd.DataFrame(periods)
+
+# ============================================================================
+# FUNCIÓN DE BÚSQUEDA (SIN SEÑALES NI WIN RATE)
+# ============================================================================
+
 def find_best_pairs_for_ea(df, correlation_type='positive', min_correlation=0.5, 
                            max_cv=0.4, lookback=100):
     """
@@ -524,6 +628,9 @@ def find_best_pairs_for_ea(df, correlation_type='positive', min_correlation=0.5,
             returns2 = np.log(p2 / p2.shift(1)).dropna()
             cond_corr = calculate_conditional_correlation(returns1, returns2)
             
+            # Calcular datos históricos disponibles
+            years_data = (common_idx[-1] - common_idx[0]).days / 365.25
+            
             candidates.append({
                 'asset1': asset1,
                 'asset2': asset2,
@@ -541,7 +648,9 @@ def find_best_pairs_for_ea(df, correlation_type='positive', min_correlation=0.5,
                 'positive_corr_pct': positive_corr_pct,
                 'corr_positive_markets': cond_corr['positive_markets'],
                 'corr_negative_markets': cond_corr['negative_markets'],
-                'corr_high_volatility': cond_corr['high_volatility']
+                'corr_high_volatility': cond_corr['high_volatility'],
+                'years_data': years_data,
+                'total_days': len(common_idx)
             })
     
     progress_bar.empty()
@@ -551,265 +660,6 @@ def find_best_pairs_for_ea(df, correlation_type='positive', min_correlation=0.5,
         return pd.DataFrame()
     
     return pd.DataFrame(candidates).sort_values('score', ascending=False)
-
-# ============================================================================
-# FUNCIONES DE BACKTESTING
-# ============================================================================
-
-def backtest_pairs_strategy(prices1, prices2, zscore_threshold=3.3, lookback=100, 
-                            correlation_threshold=0.5, position_size=10000, 
-                            stop_loss_pct=None, take_profit_pct=None):
-    """
-    Backtest completo de estrategia de pairs trading
-    """
-    # Calcular spread y z-score
-    spread = calculate_log_ratio_spread(prices1, prices2)
-    zscore = calculate_zscore(spread, window=lookback)
-    corr = calculate_correlation(prices1, prices2, window=lookback)
-    
-    # Alinear índices
-    common_idx = zscore.index.intersection(corr.index)
-    zscore = zscore.loc[common_idx]
-    corr = corr.loc[common_idx]
-    spread = spread.loc[common_idx]
-    prices1_aligned = prices1.loc[common_idx]
-    prices2_aligned = prices2.loc[common_idx]
-    
-    # Inicializar variables
-    position = 0  # 0: sin posición, 1: LONG spread, -1: SHORT spread
-    entry_price1 = 0
-    entry_price2 = 0
-    entry_spread = 0
-    trades = []
-    equity_curve = [position_size]
-    current_capital = position_size
-    
-    valid_corr = corr.abs() >= correlation_threshold
-    
-    for i in range(len(common_idx)):
-        date = common_idx[i]
-        z = zscore.iloc[i]
-        s = spread.iloc[i]
-        p1 = prices1_aligned.iloc[i]
-        p2 = prices2_aligned.iloc[i]
-        
-        # Verificar stop loss / take profit si hay posición abierta
-        if position != 0 and entry_spread != 0:
-            spread_change_pct = (s - entry_spread) / abs(entry_spread) * 100
-            
-            # Stop Loss
-            if stop_loss_pct is not None:
-                if position == 1 and spread_change_pct < -stop_loss_pct:
-                    # Cerrar LONG por stop loss
-                    pnl = (s - entry_spread) * (position_size / 2)
-                    current_capital += pnl
-                    
-                    trades.append({
-                        'entry_date': entry_date,
-                        'exit_date': date,
-                        'type': 'LONG',
-                        'entry_spread': entry_spread,
-                        'exit_spread': s,
-                        'pnl': pnl,
-                        'exit_reason': 'Stop Loss'
-                    })
-                    
-                    position = 0
-                    
-                elif position == -1 and spread_change_pct > stop_loss_pct:
-                    # Cerrar SHORT por stop loss
-                    pnl = -(s - entry_spread) * (position_size / 2)
-                    current_capital += pnl
-                    
-                    trades.append({
-                        'entry_date': entry_date,
-                        'exit_date': date,
-                        'type': 'SHORT',
-                        'entry_spread': entry_spread,
-                        'exit_spread': s,
-                        'pnl': pnl,
-                        'exit_reason': 'Stop Loss'
-                    })
-                    
-                    position = 0
-            
-            # Take Profit
-            if take_profit_pct is not None and position != 0:
-                if position == 1 and spread_change_pct > take_profit_pct:
-                    # Cerrar LONG por take profit
-                    pnl = (s - entry_spread) * (position_size / 2)
-                    current_capital += pnl
-                    
-                    trades.append({
-                        'entry_date': entry_date,
-                        'exit_date': date,
-                        'type': 'LONG',
-                        'entry_spread': entry_spread,
-                        'exit_spread': s,
-                        'pnl': pnl,
-                        'exit_reason': 'Take Profit'
-                    })
-                    
-                    position = 0
-                    
-                elif position == -1 and spread_change_pct < -take_profit_pct:
-                    # Cerrar SHORT por take profit
-                    pnl = -(s - entry_spread) * (position_size / 2)
-                    current_capital += pnl
-                    
-                    trades.append({
-                        'entry_date': entry_date,
-                        'exit_date': date,
-                        'type': 'SHORT',
-                        'entry_spread': entry_spread,
-                        'exit_spread': s,
-                        'pnl': pnl,
-                        'exit_reason': 'Take Profit'
-                    })
-                    
-                    position = 0
-        
-        # Señales de entrada/salida
-        if not valid_corr.iloc[i]:
-            # Si correlación no es válida, cerrar posición
-            if position != 0:
-                if position == 1:
-                    pnl = (s - entry_spread) * (position_size / 2)
-                else:
-                    pnl = -(s - entry_spread) * (position_size / 2)
-                
-                current_capital += pnl
-                
-                trades.append({
-                    'entry_date': entry_date,
-                    'exit_date': date,
-                    'type': 'LONG' if position == 1 else 'SHORT',
-                    'entry_spread': entry_spread,
-                    'exit_spread': s,
-                    'pnl': pnl,
-                    'exit_reason': 'Correlation Break'
-                })
-                
-                position = 0
-        else:
-            # Señal SHORT (Z-score muy alto, esperamos que baje)
-            if z > zscore_threshold and position == 0:
-                position = -1
-                entry_spread = s
-                entry_date = date
-                entry_price1 = p1
-                entry_price2 = p2
-            
-            # Señal LONG (Z-score muy bajo, esperamos que suba)
-            elif z < -zscore_threshold and position == 0:
-                position = 1
-                entry_spread = s
-                entry_date = date
-                entry_price1 = p1
-                entry_price2 = p2
-            
-            # Cerrar posición cuando Z-score vuelve a 0
-            elif abs(z) < 0.5 and position != 0:
-                if position == 1:
-                    pnl = (s - entry_spread) * (position_size / 2)
-                else:
-                    pnl = -(s - entry_spread) * (position_size / 2)
-                
-                current_capital += pnl
-                
-                trades.append({
-                    'entry_date': entry_date,
-                    'exit_date': date,
-                    'type': 'LONG' if position == 1 else 'SHORT',
-                    'entry_spread': entry_spread,
-                    'exit_spread': s,
-                    'pnl': pnl,
-                    'exit_reason': 'Mean Reversion'
-                })
-                
-                position = 0
-        
-        equity_curve.append(current_capital)
-    
-    # Cerrar posición final si existe
-    if position != 0:
-        s = spread.iloc[-1]
-        if position == 1:
-            pnl = (s - entry_spread) * (position_size / 2)
-        else:
-            pnl = -(s - entry_spread) * (position_size / 2)
-        
-        current_capital += pnl
-        
-        trades.append({
-            'entry_date': entry_date,
-            'exit_date': common_idx[-1],
-            'type': 'LONG' if position == 1 else 'SHORT',
-            'entry_spread': entry_spread,
-            'exit_spread': s,
-            'pnl': pnl,
-            'exit_reason': 'End of Data'
-        })
-        
-        equity_curve.append(current_capital)
-    
-    # Calcular métricas
-    trades_df = pd.DataFrame(trades)
-    
-    if len(trades_df) > 0:
-        total_pnl = trades_df['pnl'].sum()
-        total_return_pct = (total_pnl / position_size) * 100
-        
-        winning_trades = trades_df[trades_df['pnl'] > 0]
-        losing_trades = trades_df[trades_df['pnl'] < 0]
-        
-        win_rate = (len(winning_trades) / len(trades_df)) * 100 if len(trades_df) > 0 else 0
-        
-        avg_win = winning_trades['pnl'].mean() if len(winning_trades) > 0 else 0
-        avg_loss = losing_trades['pnl'].mean() if len(losing_trades) > 0 else 0
-        
-        profit_factor = abs(winning_trades['pnl'].sum() / losing_trades['pnl'].sum()) if len(losing_trades) > 0 and losing_trades['pnl'].sum() != 0 else np.inf
-        
-        # Drawdown
-        equity_series = pd.Series(equity_curve)
-        cummax = equity_series.cummax()
-        drawdown = (equity_series - cummax) / cummax * 100
-        max_drawdown = drawdown.min()
-        
-        # Sharpe Ratio
-        returns = equity_series.pct_change().dropna()
-        sharpe = (returns.mean() / returns.std()) * np.sqrt(252) if returns.std() != 0 else 0
-        
-        # Calmar Ratio
-        years = (common_idx[-1] - common_idx[0]).days / 365.25
-        annual_return = (total_return_pct / years) if years > 0 else 0
-        calmar = annual_return / abs(max_drawdown) if max_drawdown != 0 else 0
-        
-    else:
-        total_pnl = 0
-        total_return_pct = 0
-        win_rate = 0
-        avg_win = 0
-        avg_loss = 0
-        profit_factor = 0
-        max_drawdown = 0
-        sharpe = 0
-        calmar = 0
-    
-    metrics = {
-        'total_trades': len(trades_df),
-        'total_pnl': total_pnl,
-        'total_return_pct': total_return_pct,
-        'win_rate': win_rate,
-        'avg_win': avg_win,
-        'avg_loss': avg_loss,
-        'profit_factor': profit_factor,
-        'max_drawdown': max_drawdown,
-        'sharpe_ratio': sharpe,
-        'calmar_ratio': calmar
-    }
-    
-    return trades_df, equity_curve, metrics, zscore
 
 # ============================================================================
 # FUNCIONES DE VISUALIZACIÓN
@@ -1010,81 +860,121 @@ def plot_regime_changes(corr_series, threshold=0.3):
     
     return fig
 
-def plot_backtest_results(equity_curve, trades_df, zscore, initial_capital):
-    """Visualiza resultados del backtest"""
+def plot_seasonality_monthly(monthly_data, title, ylabel):
+    """Gráfico de patrones mensuales"""
+    months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
+              'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
     
-    fig = make_subplots(
-        rows=2, cols=1,
-        subplot_titles=('Equity Curve', 'Z-Score con Trades'),
-        vertical_spacing=0.15,
-        row_heights=[0.6, 0.4]
-    )
+    fig = go.Figure()
     
-    # Equity Curve
-    dates = zscore.index
-    equity_dates = dates.tolist() + [dates[-1]]  # Añadir fecha final
-    
-    fig.add_trace(go.Scatter(
-        x=equity_dates,
-        y=equity_curve,
-        name='Equity',
-        line=dict(color='#10b981', width=2),
-        fill='tonexty',
-        fillcolor='rgba(16, 185, 129, 0.1)'
-    ), row=1, col=1)
-    
-    fig.add_hline(y=initial_capital, line_dash="dash", line_color="#666666", 
-                  annotation_text=f"Capital Inicial: ${initial_capital:,.0f}", row=1, col=1)
-    
-    # Z-Score
-    fig.add_trace(go.Scatter(
-        x=zscore.index,
-        y=zscore,
-        name='Z-Score',
-        line=dict(color='#3b82f6', width=1.5)
-    ), row=2, col=1)
-    
-    # Marcar trades en el Z-Score
-    if len(trades_df) > 0:
-        long_entries = trades_df[trades_df['type'] == 'LONG']
-        short_entries = trades_df[trades_df['type'] == 'SHORT']
+    if 'mean' in monthly_data.columns:
+        fig.add_trace(go.Scatter(
+            x=months,
+            y=monthly_data['mean'],
+            mode='lines+markers',
+            name='Media',
+            line=dict(color='#3b82f6', width=3),
+            marker=dict(size=10)
+        ))
         
-        if len(long_entries) > 0:
-            # Encontrar z-scores en fechas de entrada
-            long_zscores = [zscore.loc[date] if date in zscore.index else np.nan 
-                           for date in long_entries['entry_date']]
-            
+        if 'std' in monthly_data.columns:
             fig.add_trace(go.Scatter(
-                x=long_entries['entry_date'],
-                y=long_zscores,
-                mode='markers',
-                name='LONG Entry',
-                marker=dict(color='#10b981', size=10, symbol='triangle-up')
-            ), row=2, col=1)
-        
-        if len(short_entries) > 0:
-            short_zscores = [zscore.loc[date] if date in zscore.index else np.nan 
-                            for date in short_entries['entry_date']]
-            
-            fig.add_trace(go.Scatter(
-                x=short_entries['entry_date'],
-                y=short_zscores,
-                mode='markers',
-                name='SHORT Entry',
-                marker=dict(color='#ef4444', size=10, symbol='triangle-down')
-            ), row=2, col=1)
-    
-    fig.add_hline(y=0, line_dash="dash", line_color="#666666", row=2, col=1)
+                x=months + months[::-1],
+                y=(monthly_data['mean'] + monthly_data['std']).tolist() + 
+                  (monthly_data['mean'] - monthly_data['std']).tolist()[::-1],
+                fill='toself',
+                fillcolor='rgba(59, 130, 246, 0.2)',
+                line=dict(color='rgba(255,255,255,0)'),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+    else:
+        fig.add_trace(go.Bar(
+            x=months,
+            y=monthly_data,
+            marker_color='#3b82f6'
+        ))
     
     fig.update_layout(
-        height=800,
+        title=title,
+        xaxis_title='Mes',
+        yaxis_title=ylabel,
         template='plotly_dark',
-        showlegend=True,
-        hovermode='x unified'
+        height=400,
+        hovermode='x'
     )
     
-    fig.update_yaxes(title_text="Capital ($)", row=1, col=1)
-    fig.update_yaxes(title_text="Z-Score", row=2, col=1)
+    return fig
+
+def plot_seasonality_quarterly(quarterly_data, title, ylabel):
+    """Gráfico de patrones trimestrales"""
+    quarters = ['Q1', 'Q2', 'Q3', 'Q4']
+    
+    fig = go.Figure()
+    
+    if 'mean' in quarterly_data.columns:
+        fig.add_trace(go.Bar(
+            x=quarters,
+            y=quarterly_data['mean'],
+            name='Media',
+            marker_color=['#10b981', '#3b82f6', '#f59e0b', '#ef4444']
+        ))
+    else:
+        fig.add_trace(go.Bar(
+            x=quarters,
+            y=quarterly_data,
+            marker_color=['#10b981', '#3b82f6', '#f59e0b', '#ef4444']
+        ))
+    
+    fig.update_layout(
+        title=title,
+        xaxis_title='Trimestre',
+        yaxis_title=ylabel,
+        template='plotly_dark',
+        height=400
+    )
+    
+    return fig
+
+def plot_seasonality_yearly(yearly_data, title, ylabel):
+    """Gráfico de evolución anual"""
+    fig = go.Figure()
+    
+    if 'mean' in yearly_data.columns:
+        fig.add_trace(go.Scatter(
+            x=yearly_data.index,
+            y=yearly_data['mean'],
+            mode='lines+markers',
+            name='Media',
+            line=dict(color='#3b82f6', width=3),
+            marker=dict(size=10)
+        ))
+        
+        if 'std' in yearly_data.columns:
+            fig.add_trace(go.Scatter(
+                x=yearly_data.index.tolist() + yearly_data.index.tolist()[::-1],
+                y=(yearly_data['mean'] + yearly_data['std']).tolist() + 
+                  (yearly_data['mean'] - yearly_data['std']).tolist()[::-1],
+                fill='toself',
+                fillcolor='rgba(59, 130, 246, 0.2)',
+                line=dict(color='rgba(255,255,255,0)'),
+                showlegend=False,
+                hoverinfo='skip'
+            ))
+    else:
+        fig.add_trace(go.Bar(
+            x=yearly_data.index,
+            y=yearly_data,
+            marker_color='#3b82f6'
+        ))
+    
+    fig.update_layout(
+        title=title,
+        xaxis_title='Año',
+        yaxis_title=ylabel,
+        template='plotly_dark',
+        height=400
+    )
     
     return fig
 
@@ -1094,6 +984,7 @@ def plot_backtest_results(equity_curve, trades_df, zscore, initial_capital):
 
 st.title("🎯 EA Pairs Trading - Candidate Finder")
 st.markdown("**Encuentra los mejores pares para tu Expert Advisor de MetaTrader 5**")
+st.info("📊 **Datos históricos extendidos**: Hasta 10 años de historia disponible | 🔍 **Análisis de estacionalidad** incluido")
 
 # ============================================================================
 # SIDEBAR - GESTIÓN DE DATOS
@@ -1107,6 +998,7 @@ if cache_info:
     st.sidebar.success("✅ Datos en cache")
     st.sidebar.metric("Última actualización", cache_info['last_update'].strftime('%Y-%m-%d %H:%M'))
     st.sidebar.metric("Total activos", cache_info['total_assets'])
+    st.sidebar.metric("Período histórico", f"{cache_info['date_range']['start']} → {cache_info['date_range']['end']}")
     
     days_old = (datetime.now() - cache_info['last_update']).days
     if days_old > 0:
@@ -1148,9 +1040,9 @@ if cache_info:
 else:
     st.sidebar.warning("⚠️ No hay datos descargados")
     
-    if st.sidebar.button("📥 Descargar Todos los Activos", type="primary", key='btn_download_assets'):
-        with st.spinner(f"Descargando {len(ASSETS)} activos..."):
-            all_data, metadata = download_all_assets(delay=3, start_date='2020-01-01')
+    if st.sidebar.button("📥 Descargar Todos los Activos (10 años)", type="primary", key='btn_download_assets'):
+        with st.spinner(f"Descargando {len(ASSETS)} activos con 10 años de historia..."):
+            all_data, metadata = download_all_assets(delay=3, start_date='2015-01-01')
         
         if len(all_data) > 0:
             if save_data_to_cache(all_data, metadata):
@@ -1169,12 +1061,18 @@ if 'all_asset_data' not in st.session_state:
     
     **Activos disponibles ({len(ASSETS)}):**
     - 📊 {len([a for a in ASSETS.values() if a['category'] == 'Indices'])} Índices globales
-    - 💱 {len([a for a in ASSETS.values() if a['category'] == 'Forex'])} Pares de divisas
+    - 💱 {len([a for a in ASSETS.values() if a['category'] == 'Forex'])} Pares de divisas (incluye DXY)
     - 🏆 {len([a for a in ASSETS.values() if a['category'] == 'Commodities'])} Commodities
     - ₿ {len([a for a in ASSETS.values() if a['category'] == 'Crypto'])} Criptomonedas
     
+    **Características:**
+    - 📅 **10 años de datos históricos** (2015-2025)
+    - 📊 **Análisis de estacionalidad** (mensual, trimestral, anual)
+    - 📈 **Patrones históricos** por períodos relevantes
+    - 🎯 **Análisis estadístico puro** (sin backtesting)
+    
     **Para comenzar:**
-    1. Presiona "📥 Descargar Todos los Activos"
+    1. Presiona "📥 Descargar Todos los Activos (10 años)"
     """)
     st.stop()
 
@@ -1195,12 +1093,6 @@ max_cv = st.sidebar.slider("Máx. CV (estabilidad)", 0.2, 0.8, 0.4, 0.05, key='p
 st.sidebar.subheader("Rolling Correlation")
 rolling_window = st.sidebar.slider("Window (días)", 10, 200, 30, 5, key='param_rolling_window')
 
-st.sidebar.markdown("---")
-st.sidebar.subheader("🎯 Backtesting")
-position_size = st.sidebar.number_input("Tamaño Posición ($)", min_value=1000, max_value=1000000, value=10000, step=1000)
-stop_loss_pct = st.sidebar.number_input("Stop Loss (%)", min_value=0.0, max_value=50.0, value=0.0, step=0.5, help="0 = sin stop loss")
-take_profit_pct = st.sidebar.number_input("Take Profit (%)", min_value=0.0, max_value=100.0, value=0.0, step=0.5, help="0 = sin take profit")
-
 # Crear DataFrame con TODOS los activos
 df_all_prices = merge_asset_data(st.session_state.all_asset_data)
 
@@ -1208,8 +1100,10 @@ if df_all_prices.empty:
     st.error("No hay datos suficientes")
     st.stop()
 
-st.success(f"✅ {len(df_all_prices)} días | {df_all_prices.index[0].date()} → {df_all_prices.index[-1].date()}")
-st.info(f"📊 Usando {len(df_all_prices.columns)} activos para análisis")
+years_available = (df_all_prices.index[-1] - df_all_prices.index[0]).days / 365.25
+
+st.success(f"✅ {len(df_all_prices)} días ({years_available:.1f} años) | {df_all_prices.index[0].date()} → {df_all_prices.index[-1].date()}")
+st.info(f"📊 Usando {len(df_all_prices.columns)} activos para análisis | 💱 DXY (US Dollar Index) incluido")
 
 # ============================================================================
 # TABS
@@ -1218,8 +1112,8 @@ st.info(f"📊 Usando {len(df_all_prices.columns)} activos para análisis")
 tab1, tab2, tab3, tab4 = st.tabs([
     "🔍 Búsqueda de Pares",
     "📊 Análisis Individual",
-    "📈 Análisis Detallado Top Pares",
-    "🎯 Backtesting"
+    "📈 Análisis Top Pares",
+    "📅 Análisis de Estacionalidad"
 ])
 
 # ============================================================================
@@ -1229,13 +1123,13 @@ tab1, tab2, tab3, tab4 = st.tabs([
 with tab1:
     st.header("🔍 Búsqueda de Mejores Pares")
     st.info("""
-    **Criterios de Selección (Enfoque Estadístico):**
+    **Criterios de Selección (Enfoque Estadístico Puro):**
     - ✅ **Estabilidad de Correlación** (35 pts): Baja variación en el tiempo
     - ✅ **Mean Reversion** (30 pts): Hurst < 0.5 (tendencia a revertir)
     - ✅ **Estacionariedad** (20 pts): ADF test significativo
     - ✅ **Cointegración** (15 pts): Relación de largo plazo
     
-    ❌ **NO se usa**: Cantidad de señales ni win rate (esos son para backtesting)
+    📊 **Datos históricos**: Hasta 10 años disponibles para análisis robusto
     """)
     
     if st.button("🚀 Buscar Mejores Pares", type="primary", key='btn_search_pairs'):
@@ -1280,13 +1174,14 @@ with tab1:
                 display_pos['Cointegrado'] = display_pos['cointegrated'].apply(lambda x: '✅' if x else '❌')
                 
                 table_pos = display_pos[['Activo 1', 'Activo 2', 'score', 'mean_correlation', 
-                                         'corr_stability_cv', 'hurst', 'half_life',
+                                         'corr_stability_cv', 'hurst', 'half_life', 'years_data',
                                          'Estacionario', 'Cointegrado', 'InpInvertTrades']].rename(columns={
                     'score': 'Score',
                     'mean_correlation': 'Corr',
                     'corr_stability_cv': 'CV',
                     'hurst': 'Hurst',
-                    'half_life': 'Half-Life'
+                    'half_life': 'Half-Life',
+                    'years_data': 'Años'
                 })
                 
                 st.dataframe(
@@ -1295,7 +1190,8 @@ with tab1:
                         'Corr': '{:.3f}',
                         'CV': '{:.3f}',
                         'Hurst': '{:.3f}',
-                        'Half-Life': '{:.1f}'
+                        'Half-Life': '{:.1f}',
+                        'Años': '{:.1f}'
                     }),
                     width='stretch',
                     height=600
@@ -1307,32 +1203,19 @@ with tab1:
                                    for _, row in display_pos.iterrows()]
                 
                 selected_pos_pair = st.selectbox(
-                    "Seleccionar par para análisis",
+                    "Seleccionar par para análisis detallado",
                     options=pair_options_pos,
                     key='select_pos_pair'
                 )
                 
-                col_a, col_b = st.columns(2)
-                
-                with col_a:
-                    if st.button("📊 Analizar", key='btn_analyze_pos'):
-                        idx = pair_options_pos.index(selected_pos_pair)
-                        selected_row = display_pos.iloc[idx]
-                        st.session_state.selected_asset1 = selected_row['asset1']
-                        st.session_state.selected_asset2 = selected_row['asset2']
-                        st.session_state.run_analysis = True
-                        st.success(f"✅ {selected_pos_pair}")
-                        st.info("👉 Ve a 'Análisis Individual'")
-                
-                with col_b:
-                    if st.button("🎯 Backtest", key='btn_backtest_pos'):
-                        idx = pair_options_pos.index(selected_pos_pair)
-                        selected_row = display_pos.iloc[idx]
-                        st.session_state.backtest_asset1 = selected_row['asset1']
-                        st.session_state.backtest_asset2 = selected_row['asset2']
-                        st.session_state.run_backtest = True
-                        st.success(f"✅ {selected_pos_pair}")
-                        st.info("👉 Ve a 'Backtesting'")
+                if st.button("📊 Analizar Este Par", key='btn_analyze_pos'):
+                    idx = pair_options_pos.index(selected_pos_pair)
+                    selected_row = display_pos.iloc[idx]
+                    st.session_state.selected_asset1 = selected_row['asset1']
+                    st.session_state.selected_asset2 = selected_row['asset2']
+                    st.session_state.run_analysis = True
+                    st.success(f"✅ {selected_pos_pair} seleccionado")
+                    st.info("👉 Ve a la pestaña 'Análisis Individual' o 'Análisis de Estacionalidad'")
                 
             else:
                 st.warning("No se encontraron pares con correlación positiva")
@@ -1349,13 +1232,14 @@ with tab1:
                 display_neg['Cointegrado'] = display_neg['cointegrated'].apply(lambda x: '✅' if x else '❌')
                 
                 table_neg = display_neg[['Activo 1', 'Activo 2', 'score', 'mean_correlation', 
-                                         'corr_stability_cv', 'hurst', 'half_life',
+                                         'corr_stability_cv', 'hurst', 'half_life', 'years_data',
                                          'Estacionario', 'Cointegrado', 'InpInvertTrades']].rename(columns={
                     'score': 'Score',
                     'mean_correlation': 'Corr',
                     'corr_stability_cv': 'CV',
                     'hurst': 'Hurst',
-                    'half_life': 'Half-Life'
+                    'half_life': 'Half-Life',
+                    'years_data': 'Años'
                 })
                 
                 st.dataframe(
@@ -1364,7 +1248,8 @@ with tab1:
                         'Corr': '{:.3f}',
                         'CV': '{:.3f}',
                         'Hurst': '{:.3f}',
-                        'Half-Life': '{:.1f}'
+                        'Half-Life': '{:.1f}',
+                        'Años': '{:.1f}'
                     }),
                     width='stretch',
                     height=600
@@ -1376,32 +1261,19 @@ with tab1:
                                    for _, row in display_neg.iterrows()]
                 
                 selected_neg_pair = st.selectbox(
-                    "Seleccionar par para análisis",
+                    "Seleccionar par para análisis detallado",
                     options=pair_options_neg,
                     key='select_neg_pair'
                 )
                 
-                col_a, col_b = st.columns(2)
-                
-                with col_a:
-                    if st.button("📊 Analizar", key='btn_analyze_neg'):
-                        idx = pair_options_neg.index(selected_neg_pair)
-                        selected_row = display_neg.iloc[idx]
-                        st.session_state.selected_asset1 = selected_row['asset1']
-                        st.session_state.selected_asset2 = selected_row['asset2']
-                        st.session_state.run_analysis = True
-                        st.success(f"✅ {selected_neg_pair}")
-                        st.info("👉 Ve a 'Análisis Individual'")
-                
-                with col_b:
-                    if st.button("🎯 Backtest", key='btn_backtest_neg'):
-                        idx = pair_options_neg.index(selected_neg_pair)
-                        selected_row = display_neg.iloc[idx]
-                        st.session_state.backtest_asset1 = selected_row['asset1']
-                        st.session_state.backtest_asset2 = selected_row['asset2']
-                        st.session_state.run_backtest = True
-                        st.success(f"✅ {selected_neg_pair}")
-                        st.info("👉 Ve a 'Backtesting'")
+                if st.button("📊 Analizar Este Par", key='btn_analyze_neg'):
+                    idx = pair_options_neg.index(selected_neg_pair)
+                    selected_row = display_neg.iloc[idx]
+                    st.session_state.selected_asset1 = selected_row['asset1']
+                    st.session_state.selected_asset2 = selected_row['asset2']
+                    st.session_state.run_analysis = True
+                    st.success(f"✅ {selected_neg_pair} seleccionado")
+                    st.info("👉 Ve a la pestaña 'Análisis Individual' o 'Análisis de Estacionalidad'")
                 
             else:
                 st.warning("No se encontraron pares con correlación negativa")
@@ -1413,13 +1285,11 @@ with tab1:
 with tab2:
     st.header("📊 Análisis Individual de Par")
     
-    # Selección de activos (con valores por defecto si hay par seleccionado)
     available_assets = list(st.session_state.all_asset_data.keys())
     
     default_asset1 = st.session_state.get('selected_asset1', available_assets[0])
     default_asset2 = st.session_state.get('selected_asset2', available_assets[1] if len(available_assets) > 1 else available_assets[0])
     
-    # Asegurar que asset2 no sea igual a asset1
     if default_asset2 == default_asset1 and len(available_assets) > 1:
         default_asset2 = available_assets[1]
     
@@ -1444,7 +1314,6 @@ with tab2:
             key='detail_asset2'
         )
     
-    # Configuración del análisis
     st.markdown("### ⚙️ Configuración del Análisis")
     
     col1, col2, col3 = st.columns(3)
@@ -1467,11 +1336,19 @@ with tab2:
         if st.button("🔄 Actualizar Análisis", type="primary", key='btn_analyze'):
             st.session_state.run_analysis = True
     
-    # Solo ejecutar análisis si se presionó el botón O si viene de selección de tabla
     if st.session_state.get('run_analysis', False):
         
         prices1 = df_all_prices[asset1]
         prices2 = df_all_prices[asset2]
+        
+        # Información del período
+        years_data = (prices1.index[-1] - prices1.index[0]).days / 365.25
+        
+        st.markdown("### 📅 Período de Análisis")
+        col1, col2, col3 = st.columns(3)
+        col1.metric("Fecha Inicio", prices1.index[0].strftime('%Y-%m-%d'))
+        col2.metric("Fecha Fin", prices1.index[-1].strftime('%Y-%m-%d'))
+        col3.metric("Años de Datos", f"{years_data:.1f}")
         
         # Rolling Correlation
         st.markdown("### 📈 Rolling Correlation")
@@ -1496,7 +1373,6 @@ with tab2:
         col3.metric("Máxima", f"{max_corr:.4f}")
         col4.metric("Mínima", f"{min_corr:.4f}")
         
-        # Verificar si cumple con el tipo de correlación buscado
         if correlation_type_analysis == 'Positiva':
             if mean_corr >= correlation_threshold:
                 st.success(f"✅ Este par tiene correlación POSITIVA fuerte ({mean_corr:.3f} >= {correlation_threshold})")
@@ -1524,6 +1400,8 @@ InpLookback = {lookback}
 InpZScoreThresholdLong = {zscore_threshold}
 InpZScoreThresholdShort = {zscore_threshold}
 InpCorrelationThreshold = {correlation_threshold}
+
+// Datos históricos: {years_data:.1f} años
             """, language="c++")
         
         with col2:
@@ -1535,6 +1413,8 @@ InpLookback = {lookback}
 InpZScoreThresholdLong = {zscore_threshold}
 InpZScoreThresholdShort = {zscore_threshold}
 InpCorrelationThreshold = {correlation_threshold}
+
+// Datos históricos: {years_data:.1f} años
             """, language="c++")
         
         # Comparación de precios
@@ -1596,14 +1476,30 @@ InpCorrelationThreshold = {correlation_threshold}
         col2.metric("CV Actual", f"{stability['current_cv']:.3f}")
         col3.metric("Desv. Std Corr", f"{stability['std_corr']:.3f}")
         
-        # Resetear flag
+        # Análisis histórico por períodos
+        st.markdown("### 📅 Análisis por Períodos Históricos")
+        
+        historical_df = calculate_historical_periods(df_all_prices, asset1, asset2)
+        
+        if len(historical_df) > 0:
+            st.dataframe(
+                historical_df.style.format({
+                    'correlation': '{:.3f}',
+                    'spread_mean': '{:.4f}',
+                    'spread_std': '{:.4f}',
+                    'spread_min': '{:.4f}',
+                    'spread_max': '{:.4f}'
+                }),
+                width='stretch'
+            )
+        
         st.session_state.run_analysis = False
     
     else:
-        st.info("👆 Configura el análisis y presiona **'🔄 Actualizar Análisis'** para ver los resultados, o selecciona un par desde la pestaña de búsqueda")
+        st.info("👆 Configura el análisis y presiona **'🔄 Actualizar Análisis'**")
 
 # ============================================================================
-# TAB 3: ANÁLISIS DETALLADO TOP PARES
+# TAB 3: ANÁLISIS TOP PARES
 # ============================================================================
 
 with tab3:
@@ -1611,7 +1507,6 @@ with tab3:
     
     if 'positive_pairs' in st.session_state and 'negative_pairs' in st.session_state:
         
-        # Rolling Correlation Top 10 Positivos
         st.markdown("### 📈 Rolling Correlation - Top 10 Pares Positivos")
         
         if len(st.session_state.positive_pairs) > 0:
@@ -1625,7 +1520,6 @@ with tab3:
         
         st.markdown("---")
         
-        # Rolling Correlation Top 10 Negativos
         st.markdown("### 📉 Rolling Correlation - Top 10 Pares Negativos")
         
         if len(st.session_state.negative_pairs) > 0:
@@ -1639,7 +1533,6 @@ with tab3:
         
         st.markdown("---")
         
-        # Comparación de Métricas
         st.markdown("### 📊 Comparación de Métricas - Todos los Pares Encontrados")
         
         col1, col2 = st.columns(2)
@@ -1648,26 +1541,25 @@ with tab3:
             if len(st.session_state.positive_pairs) > 0:
                 st.markdown("#### 📈 Pares Positivos")
                 
-                # Gráfico de Score vs Hurst
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=st.session_state.positive_pairs['score'],
                     y=st.session_state.positive_pairs['hurst'],
                     mode='markers',
                     marker=dict(
-                        size=st.session_state.positive_pairs['corr_stability_cv'] * 100,
+                        size=st.session_state.positive_pairs['years_data'] * 3,
                         color=st.session_state.positive_pairs['mean_correlation'],
                         colorscale='Viridis',
                         showscale=True,
                         colorbar=dict(title="Corr")
                     ),
-                    text=[f"{ASSETS[row['asset1']]['label']} / {ASSETS[row['asset2']]['label']}" 
+                    text=[f"{ASSETS[row['asset1']]['label']} / {ASSETS[row['asset2']]['label']}<br>{row['years_data']:.1f} años" 
                           for _, row in st.session_state.positive_pairs.iterrows()],
                     hovertemplate='<b>%{text}</b><br>Score: %{x:.1f}<br>Hurst: %{y:.3f}<extra></extra>'
                 ))
                 
                 fig.update_layout(
-                    title='Score vs Hurst (tamaño = CV)',
+                    title='Score vs Hurst (tamaño = años de datos)',
                     xaxis_title='Score',
                     yaxis_title='Hurst Exponent',
                     template='plotly_dark',
@@ -1680,26 +1572,25 @@ with tab3:
             if len(st.session_state.negative_pairs) > 0:
                 st.markdown("#### 📉 Pares Negativos")
                 
-                # Gráfico de Score vs Hurst
                 fig = go.Figure()
                 fig.add_trace(go.Scatter(
                     x=st.session_state.negative_pairs['score'],
                     y=st.session_state.negative_pairs['hurst'],
                     mode='markers',
                     marker=dict(
-                        size=st.session_state.negative_pairs['corr_stability_cv'] * 100,
+                        size=st.session_state.negative_pairs['years_data'] * 3,
                         color=st.session_state.negative_pairs['mean_correlation'],
                         colorscale='Plasma',
                         showscale=True,
                         colorbar=dict(title="Corr")
                     ),
-                    text=[f"{ASSETS[row['asset1']]['label']} / {ASSETS[row['asset2']]['label']}" 
+                    text=[f"{ASSETS[row['asset1']]['label']} / {ASSETS[row['asset2']]['label']}<br>{row['years_data']:.1f} años" 
                           for _, row in st.session_state.negative_pairs.iterrows()],
                     hovertemplate='<b>%{text}</b><br>Score: %{x:.1f}<br>Hurst: %{y:.3f}<extra></extra>'
                 ))
                 
                 fig.update_layout(
-                    title='Score vs Hurst (tamaño = CV)',
+                    title='Score vs Hurst (tamaño = años de datos)',
                     xaxis_title='Score',
                     yaxis_title='Hurst Exponent',
                     template='plotly_dark',
@@ -1712,183 +1603,234 @@ with tab3:
         st.info("👆 Primero ejecuta la búsqueda de pares en la pestaña 'Búsqueda de Pares'")
 
 # ============================================================================
-# TAB 4: BACKTESTING
+# TAB 4: ANÁLISIS DE ESTACIONALIDAD
 # ============================================================================
 
 with tab4:
-    st.header("🎯 Backtesting de Estrategia Pairs Trading")
+    st.header("📅 Análisis de Estacionalidad")
+    st.info("Identifica patrones estacionales en la correlación y el spread para optimizar el timing de las operaciones")
     
-    # Selección de activos
     available_assets = list(st.session_state.all_asset_data.keys())
     
-    default_backtest_asset1 = st.session_state.get('backtest_asset1', available_assets[0])
-    default_backtest_asset2 = st.session_state.get('backtest_asset2', available_assets[1] if len(available_assets) > 1 else available_assets[0])
+    default_season_asset1 = st.session_state.get('selected_asset1', available_assets[0])
+    default_season_asset2 = st.session_state.get('selected_asset2', available_assets[1] if len(available_assets) > 1 else available_assets[0])
     
-    if default_backtest_asset2 == default_backtest_asset1 and len(available_assets) > 1:
-        default_backtest_asset2 = available_assets[1]
+    if default_season_asset2 == default_season_asset1 and len(available_assets) > 1:
+        default_season_asset2 = available_assets[1]
     
     col1, col2 = st.columns(2)
     
     with col1:
-        backtest_asset1 = st.selectbox(
+        season_asset1 = st.selectbox(
             "Activo 1",
             options=available_assets,
-            index=available_assets.index(default_backtest_asset1) if default_backtest_asset1 in available_assets else 0,
+            index=available_assets.index(default_season_asset1) if default_season_asset1 in available_assets else 0,
             format_func=lambda x: ASSETS[x]['label'],
-            key='backtest_asset1_select'
+            key='season_asset1'
         )
     
     with col2:
-        backtest_asset2_options = [a for a in available_assets if a != backtest_asset1]
-        backtest_asset2 = st.selectbox(
+        season_asset2_options = [a for a in available_assets if a != season_asset1]
+        season_asset2 = st.selectbox(
             "Activo 2",
-            options=backtest_asset2_options,
-            index=backtest_asset2_options.index(default_backtest_asset2) if default_backtest_asset2 in backtest_asset2_options else 0,
+            options=season_asset2_options,
+            index=season_asset2_options.index(default_season_asset2) if default_season_asset2 in season_asset2_options else 0,
             format_func=lambda x: ASSETS[x]['label'],
-            key='backtest_asset2_select'
+            key='season_asset2'
         )
     
-    st.markdown("### ⚙️ Configuración del Backtest")
-    
-    col1, col2, col3 = st.columns(3)
-    
-    with col1:
-        st.metric("Z-Score Threshold", f"±{zscore_threshold}")
-        st.metric("Lookback", f"{lookback} días")
-    
-    with col2:
-        st.metric("Correlación Min", f"{correlation_threshold:.2f}")
-        st.metric("Tamaño Posición", f"${position_size:,.0f}")
-    
-    with col3:
-        if stop_loss_pct > 0:
-            st.metric("Stop Loss", f"{stop_loss_pct}%")
-        else:
-            st.metric("Stop Loss", "Desactivado")
+    if st.button("🔄 Analizar Estacionalidad", type="primary", key='btn_seasonality'):
         
-        if take_profit_pct > 0:
-            st.metric("Take Profit", f"{take_profit_pct}%")
-        else:
-            st.metric("Take Profit", "Desactivado")
-    
-    if st.button("🚀 Ejecutar Backtest", type="primary", key='btn_run_backtest'):
-        st.session_state.run_backtest = True
-    
-    if st.session_state.get('run_backtest', False):
+        with st.spinner("Analizando patrones estacionales..."):
+            seasonality = analyze_seasonality(df_all_prices, season_asset1, season_asset2, lookback)
         
-        with st.spinner("Ejecutando backtest..."):
-            prices1 = df_all_prices[backtest_asset1]
-            prices2 = df_all_prices[backtest_asset2]
-            
-            # Ejecutar backtest
-            trades_df, equity_curve, metrics, zscore = backtest_pairs_strategy(
-                prices1, prices2,
-                zscore_threshold=zscore_threshold,
-                lookback=lookback,
-                correlation_threshold=correlation_threshold,
-                position_size=position_size,
-                stop_loss_pct=stop_loss_pct if stop_loss_pct > 0 else None,
-                take_profit_pct=take_profit_pct if take_profit_pct > 0 else None
-            )
+        st.success("✅ Análisis de estacionalidad completado")
         
-        st.success("✅ Backtest completado!")
-        
-        # Mostrar métricas principales
-        st.markdown("### 📊 Resultados del Backtest")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        col1.metric("Total Trades", metrics['total_trades'])
-        col2.metric("Win Rate", f"{metrics['win_rate']:.1f}%")
-        col3.metric("Profit Factor", f"{metrics['profit_factor']:.2f}")
-        col4.metric("Total Return", f"{metrics['total_return_pct']:.2f}%")
-        
-        col1, col2, col3, col4 = st.columns(4)
-        
-        col1.metric("Total PnL", f"${metrics['total_pnl']:,.2f}")
-        col2.metric("Max Drawdown", f"{metrics['max_drawdown']:.2f}%")
-        col3.metric("Sharpe Ratio", f"{metrics['sharpe_ratio']:.2f}")
-        col4.metric("Calmar Ratio", f"{metrics['calmar_ratio']:.2f}")
+        # Análisis mensual
+        st.markdown("### 📅 Análisis Mensual")
         
         col1, col2 = st.columns(2)
         
-        col1.metric("Avg Win", f"${metrics['avg_win']:,.2f}")
-        col2.metric("Avg Loss", f"${metrics['avg_loss']:,.2f}")
+        with col1:
+            st.markdown("#### Correlación por Mes")
+            fig_monthly_corr = plot_seasonality_monthly(
+                seasonality['monthly_corr'],
+                'Correlación Media por Mes',
+                'Correlación'
+            )
+            st.plotly_chart(fig_monthly_corr, use_container_width=True)
         
-        # Gráficos
-        st.markdown("### 📈 Gráficos")
+        with col2:
+            st.markdown("#### Volatilidad del Spread por Mes")
+            fig_monthly_vol = plot_seasonality_monthly(
+                seasonality['monthly_spread_vol'],
+                'Volatilidad del Spread por Mes',
+                'Volatilidad'
+            )
+            st.plotly_chart(fig_monthly_vol, use_container_width=True)
         
-        fig = plot_backtest_results(equity_curve, trades_df, zscore, position_size)
-        st.plotly_chart(fig, use_container_width=True)
+        # Tabla de estadísticas mensuales
+        st.markdown("#### 📊 Estadísticas Mensuales Detalladas")
         
-        # Tabla de trades
-        st.markdown("### 📋 Historial de Trades")
+        monthly_stats = seasonality['monthly_corr'].copy()
+        monthly_stats.index = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
+                              'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
         
-        if len(trades_df) > 0:
-            display_trades = trades_df.copy()
-            display_trades['entry_date'] = pd.to_datetime(display_trades['entry_date']).dt.strftime('%Y-%m-%d')
-            display_trades['exit_date'] = pd.to_datetime(display_trades['exit_date']).dt.strftime('%Y-%m-%d')
-            display_trades['duration'] = (pd.to_datetime(trades_df['exit_date']) - pd.to_datetime(trades_df['entry_date'])).dt.days
-            
+        st.dataframe(
+            monthly_stats.style.format({
+                'mean': '{:.3f}',
+                'std': '{:.3f}',
+                'min': '{:.3f}',
+                'max': '{:.3f}'
+            }),
+            width='stretch'
+        )
+        
+        st.markdown("---")
+        
+        # Análisis trimestral
+        st.markdown("### 📊 Análisis Trimestral")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Correlación por Trimestre")
+            fig_quarterly_corr = plot_seasonality_quarterly(
+                seasonality['quarterly_corr'],
+                'Correlación Media por Trimestre',
+                'Correlación'
+            )
+            st.plotly_chart(fig_quarterly_corr, use_container_width=True)
+        
+        with col2:
+            st.markdown("#### Volatilidad del Spread por Trimestre")
+            fig_quarterly_vol = plot_seasonality_quarterly(
+                seasonality['quarterly_spread_vol'],
+                'Volatilidad del Spread por Trimestre',
+                'Volatilidad'
+            )
+            st.plotly_chart(fig_quarterly_vol, use_container_width=True)
+        
+        st.markdown("---")
+        
+        # Análisis anual
+        st.markdown("### 📈 Análisis Anual (Evolución Histórica)")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.markdown("#### Correlación por Año")
+            fig_yearly_corr = plot_seasonality_yearly(
+                seasonality['yearly_corr'],
+                'Correlación Media por Año',
+                'Correlación'
+            )
+            st.plotly_chart(fig_yearly_corr, use_container_width=True)
+        
+        with col2:
+            st.markdown("#### Volatilidad del Spread por Año")
+            fig_yearly_vol = plot_seasonality_yearly(
+                seasonality['yearly_spread_vol'],
+                'Volatilidad del Spread por Año',
+                'Volatilidad'
+            )
+            st.plotly_chart(fig_yearly_vol, use_container_width=True)
+        
+        # Estadísticas anuales
+        st.markdown("#### 📊 Estadísticas Anuales Detalladas")
+        
+        st.dataframe(
+            seasonality['yearly_corr'].style.format({
+                'mean': '{:.3f}',
+                'std': '{:.3f}',
+                'min': '{:.3f}',
+                'max': '{:.3f}'
+            }),
+            width='stretch'
+        )
+        
+        st.markdown("---")
+        
+        # Análisis de períodos históricos
+        st.markdown("### 📅 Análisis por Períodos Históricos Relevantes")
+        
+        historical_df = calculate_historical_periods(df_all_prices, season_asset1, season_asset2)
+        
+        if len(historical_df) > 0:
             st.dataframe(
-                display_trades.style.format({
-                    'entry_spread': '{:.4f}',
-                    'exit_spread': '{:.4f}',
-                    'pnl': '${:,.2f}'
+                historical_df.style.format({
+                    'correlation': '{:.3f}',
+                    'spread_mean': '{:.4f}',
+                    'spread_std': '{:.4f}',
+                    'spread_min': '{:.4f}',
+                    'spread_max': '{:.4f}'
                 }),
-                width='stretch',
-                height=400
+                width='stretch'
             )
             
-            # Descargar resultados
-            csv = trades_df.to_csv(index=False)
-            st.download_button(
-                "📥 Descargar Trades (CSV)",
-                csv,
-                f"backtest_{ASSETS[backtest_asset1]['label']}_{ASSETS[backtest_asset2]['label']}.csv",
-                "text/csv"
-            )
-        else:
-            st.warning("No se generaron trades en el período analizado")
-        
-        # Análisis de distribución de PnL
-        if len(trades_df) > 0:
-            st.markdown("### 📊 Distribución de PnL")
-            
+            # Gráfico de evolución de correlación por período
             fig = go.Figure()
-            fig.add_trace(go.Histogram(
-                x=trades_df['pnl'],
-                nbinsx=30,
-                marker_color='#3b82f6',
-                name='PnL Distribution'
+            
+            fig.add_trace(go.Bar(
+                x=historical_df['period'],
+                y=historical_df['correlation'],
+                marker_color=['#10b981' if c > 0 else '#ef4444' for c in historical_df['correlation']],
+                text=historical_df['correlation'].round(3),
+                textposition='auto'
             ))
             
             fig.update_layout(
-                title='Distribución de PnL por Trade',
-                xaxis_title='PnL ($)',
-                yaxis_title='Frecuencia',
+                title='Correlación por Período Histórico',
+                xaxis_title='Período',
+                yaxis_title='Correlación',
                 template='plotly_dark',
                 height=400
             )
             
             st.plotly_chart(fig, use_container_width=True)
         
-        st.session_state.run_backtest = False
+        st.markdown("---")
+        
+        # Recomendaciones basadas en estacionalidad
+        st.markdown("### 💡 Recomendaciones de Trading Basadas en Estacionalidad")
+        
+        # Encontrar mejores meses
+        best_months = seasonality['monthly_corr']['mean'].abs().nlargest(3)
+        worst_months = seasonality['monthly_corr']['mean'].abs().nsmallest(3)
+        
+        months_names = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
+                       'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.success("**✅ Mejores Meses para Trading**")
+            for month_num in best_months.index:
+                st.write(f"- **{months_names[month_num-1]}**: Correlación media = {best_months[month_num]:.3f}")
+        
+        with col2:
+            st.warning("**⚠️ Meses con Menor Correlación**")
+            for month_num in worst_months.index:
+                st.write(f"- **{months_names[month_num-1]}**: Correlación media = {worst_months[month_num]:.3f}")
     
     else:
-        st.info("👆 Configura los parámetros y presiona **'🚀 Ejecutar Backtest'**, o selecciona un par desde la pestaña de búsqueda")
+        st.info("👆 Selecciona los activos y presiona **'🔄 Analizar Estacionalidad'**")
 
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 Guía Rápida")
 st.sidebar.markdown("""
 **Flujo de Trabajo:**
-1. 🔍 **Búsqueda**: Encuentra pares (criterios estadísticos)
-2. 📊 **Individual**: Analiza correlación
-3. 📈 **Top Pares**: Compara gráficos
-4. 🎯 **Backtesting**: Simula estrategia
+1. 🔍 **Búsqueda**: Encuentra pares con criterios estadísticos
+2. 📊 **Individual**: Analiza correlación y estabilidad
+3. 📈 **Top Pares**: Compara múltiples pares
+4. 📅 **Estacionalidad**: Identifica mejores períodos
 
-**Nuevo Scoring:** Basado en propiedades estadísticas, NO en señales
+**Novedades:**
+- ✅ 10 años de datos históricos
+- ✅ DXY incluido
+- ✅ Análisis de estacionalidad completo
+- ✅ Sin backtesting (análisis puro)
 """)
 
 st.sidebar.success("✨ Diseñado para EA MQL5")
