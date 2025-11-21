@@ -979,6 +979,37 @@ def plot_correlation_stability(stability_df):
     
     return fig
 
+def plot_regime_changes(corr_series, threshold=0.3):
+    """Visualiza puntos de cambio de régimen"""
+    breakpoints = detect_regime_changes(corr_series, threshold)
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(x=corr_series.index, y=corr_series,
+                             mode='lines', name='Correlation',
+                             line=dict(color='#3b82f6', width=2)))
+    
+    if len(breakpoints) > 0:
+        fig.add_trace(go.Scatter(
+            x=breakpoints.index,
+            y=[corr_series.loc[idx] for idx in breakpoints.index],
+            mode='markers',
+            name='Regime Change',
+            marker=dict(color='#ef4444', size=10, symbol='x')
+        ))
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="#666666")
+    
+    fig.update_layout(
+        title='Detección de Cambios de Régimen',
+        xaxis_title='Fecha',
+        yaxis_title='Correlación',
+        template='plotly_dark',
+        height=400
+    )
+    
+    return fig
+
 def plot_backtest_results(equity_curve, trades_df, zscore, initial_capital):
     """Visualiza resultados del backtest"""
     
@@ -1084,7 +1115,7 @@ if cache_info:
     col1, col2 = st.sidebar.columns(2)
     
     with col1:
-        if st.button("🔄 Actualizar", use_container_width=True):
+        if st.button("🔄 Actualizar", key='btn_update_data'):
             with st.spinner("Actualizando datos..."):
                 existing_data, existing_metadata = load_data_from_cache()
                 
@@ -1098,7 +1129,7 @@ if cache_info:
                         st.rerun()
     
     with col2:
-        if st.button("🗑️ Borrar", use_container_width=True):
+        if st.button("🗑️ Borrar", key='btn_delete_cache'):
             if CACHE_FILE.exists():
                 CACHE_FILE.unlink()
             if METADATA_FILE.exists():
@@ -1117,7 +1148,7 @@ if cache_info:
 else:
     st.sidebar.warning("⚠️ No hay datos descargados")
     
-    if st.sidebar.button("📥 Descargar Todos los Activos", type="primary", use_container_width=True):
+    if st.sidebar.button("📥 Descargar Todos los Activos", type="primary", key='btn_download_assets'):
         with st.spinner(f"Descargando {len(ASSETS)} activos..."):
             all_data, metadata = download_all_assets(delay=3, start_date='2020-01-01')
         
@@ -1191,8 +1222,9 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "🎯 Backtesting"
 ])
 
-# TAB 1: BÚSQUEDA DE PARES (código anterior continúa...)
-# [El resto del código sigue igual hasta el tab de backtesting]
+# ============================================================================
+# TAB 1: BÚSQUEDA DE PARES
+# ============================================================================
 
 with tab1:
     st.header("🔍 Búsqueda de Mejores Pares")
@@ -1265,7 +1297,7 @@ with tab1:
                         'Hurst': '{:.3f}',
                         'Half-Life': '{:.1f}'
                     }),
-                    use_container_width=True,
+                    width='stretch',
                     height=600
                 )
                 
@@ -1334,7 +1366,7 @@ with tab1:
                         'Hurst': '{:.3f}',
                         'Half-Life': '{:.1f}'
                     }),
-                    use_container_width=True,
+                    width='stretch',
                     height=600
                 )
                 
@@ -1374,8 +1406,310 @@ with tab1:
             else:
                 st.warning("No se encontraron pares con correlación negativa")
 
-# TAB 2 y 3: Mismo código anterior...
-# [Aquí va el código de tab2 y tab3 que ya teníamos]
+# ============================================================================
+# TAB 2: ANÁLISIS INDIVIDUAL
+# ============================================================================
+
+with tab2:
+    st.header("📊 Análisis Individual de Par")
+    
+    # Selección de activos (con valores por defecto si hay par seleccionado)
+    available_assets = list(st.session_state.all_asset_data.keys())
+    
+    default_asset1 = st.session_state.get('selected_asset1', available_assets[0])
+    default_asset2 = st.session_state.get('selected_asset2', available_assets[1] if len(available_assets) > 1 else available_assets[0])
+    
+    # Asegurar que asset2 no sea igual a asset1
+    if default_asset2 == default_asset1 and len(available_assets) > 1:
+        default_asset2 = available_assets[1]
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        asset1 = st.selectbox(
+            "Activo 1",
+            options=available_assets,
+            index=available_assets.index(default_asset1) if default_asset1 in available_assets else 0,
+            format_func=lambda x: ASSETS[x]['label'],
+            key='detail_asset1'
+        )
+    
+    with col2:
+        asset2_options = [a for a in available_assets if a != asset1]
+        asset2 = st.selectbox(
+            "Activo 2",
+            options=asset2_options,
+            index=asset2_options.index(default_asset2) if default_asset2 in asset2_options else 0,
+            format_func=lambda x: ASSETS[x]['label'],
+            key='detail_asset2'
+        )
+    
+    # Configuración del análisis
+    st.markdown("### ⚙️ Configuración del Análisis")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        correlation_type_analysis = st.radio(
+            "Tipo de Correlación a Buscar",
+            options=['Positiva', 'Negativa'],
+            help="**Positiva**: Pares que se mueven juntos\n**Negativa**: Pares que se mueven en direcciones opuestas"
+        )
+    
+    with col2:
+        invert_trades = st.checkbox(
+            "InpInvertTrades",
+            value=False,
+            help="Invierte las señales de trading del EA"
+        )
+    
+    with col3:
+        if st.button("🔄 Actualizar Análisis", type="primary", key='btn_analyze'):
+            st.session_state.run_analysis = True
+    
+    # Solo ejecutar análisis si se presionó el botón O si viene de selección de tabla
+    if st.session_state.get('run_analysis', False):
+        
+        prices1 = df_all_prices[asset1]
+        prices2 = df_all_prices[asset2]
+        
+        # Rolling Correlation
+        st.markdown("### 📈 Rolling Correlation")
+        corr_df = calculate_rolling_correlation(df_all_prices, asset1, asset2, window=rolling_window, step=1)
+        st.plotly_chart(
+            plot_rolling_correlation(corr_df, ASSETS[asset1]['label'], ASSETS[asset2]['label']),
+            use_container_width=True
+        )
+        
+        # Métricas de correlación
+        st.markdown("### 📊 Métricas de Correlación")
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        current_corr = corr_df['correlation'].iloc[-1]
+        mean_corr = corr_df['correlation'].mean()
+        max_corr = corr_df['correlation'].max()
+        min_corr = corr_df['correlation'].min()
+        
+        col1.metric("Correlación Actual", f"{current_corr:.4f}")
+        col2.metric("Correlación Media", f"{mean_corr:.4f}")
+        col3.metric("Máxima", f"{max_corr:.4f}")
+        col4.metric("Mínima", f"{min_corr:.4f}")
+        
+        # Verificar si cumple con el tipo de correlación buscado
+        if correlation_type_analysis == 'Positiva':
+            if mean_corr >= correlation_threshold:
+                st.success(f"✅ Este par tiene correlación POSITIVA fuerte ({mean_corr:.3f} >= {correlation_threshold})")
+            else:
+                st.warning(f"⚠️ Este par NO tiene correlación positiva suficiente ({mean_corr:.3f} < {correlation_threshold})")
+        else:
+            if mean_corr <= -correlation_threshold:
+                st.success(f"✅ Este par tiene correlación NEGATIVA fuerte ({mean_corr:.3f} <= {-correlation_threshold})")
+            else:
+                st.warning(f"⚠️ Este par NO tiene correlación negativa suficiente ({mean_corr:.3f} > {-correlation_threshold})")
+        
+        # Configuración sugerida para el EA
+        st.markdown("### 💻 Configuración Sugerida para el EA")
+        
+        suggest_invert_based_on_corr = mean_corr < 0
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            st.code(f"""
+// Configuración Manual Seleccionada:
+InpSecondSymbol = "{ASSETS[asset2]['symbol']}"
+InpInvertTrades = {str(invert_trades).lower()}
+InpLookback = {lookback}
+InpZScoreThresholdLong = {zscore_threshold}
+InpZScoreThresholdShort = {zscore_threshold}
+InpCorrelationThreshold = {correlation_threshold}
+            """, language="c++")
+        
+        with col2:
+            st.code(f"""
+// Configuración Sugerida (basada en correlación):
+InpSecondSymbol = "{ASSETS[asset2]['symbol']}"
+InpInvertTrades = {str(suggest_invert_based_on_corr).lower()}
+InpLookback = {lookback}
+InpZScoreThresholdLong = {zscore_threshold}
+InpZScoreThresholdShort = {zscore_threshold}
+InpCorrelationThreshold = {correlation_threshold}
+            """, language="c++")
+        
+        # Comparación de precios
+        st.markdown("### 📉 Comparación de Precios Normalizados")
+        st.plotly_chart(
+            plot_price_comparison(df_all_prices, asset1, asset2, 
+                                 ASSETS[asset1]['label'], ASSETS[asset2]['label']),
+            use_container_width=True
+        )
+        
+        # Correlación condicional
+        st.markdown("### 🔍 Correlación Condicional")
+        returns1 = np.log(prices1 / prices1.shift(1)).dropna()
+        returns2 = np.log(prices2 / prices2.shift(1)).dropna()
+        cond_corr = calculate_conditional_correlation(returns1, returns2)
+        
+        st.plotly_chart(plot_conditional_correlation(cond_corr), use_container_width=True)
+        
+        # Distribución Temporal
+        st.markdown("### 📈 Distribución Temporal")
+        
+        positive = (corr_df['correlation'] > 0).sum()
+        negative = (corr_df['correlation'] < 0).sum()
+        strong_pos = (corr_df['correlation'] > 0.5).sum()
+        strong_neg = (corr_df['correlation'] < -0.5).sum()
+        total = len(corr_df)
+        
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric("% Positiva", f"{positive/total*100:.1f}%")
+        col2.metric("% Negativa", f"{negative/total*100:.1f}%")
+        col3.metric("% Fuerte Pos (>0.5)", f"{strong_pos/total*100:.1f}%")
+        col4.metric("% Fuerte Neg (<-0.5)", f"{strong_neg/total*100:.1f}%")
+        
+        # Estabilidad de Correlación
+        st.markdown("### 🎯 Estabilidad de Correlación")
+        
+        corr_series = pd.Series(
+            corr_df['correlation'].values,
+            index=corr_df['date']
+        )
+        
+        rolling_std = corr_series.rolling(60).std()
+        rolling_mean = corr_series.rolling(60).mean()
+        cv = (rolling_std / rolling_mean.abs()).replace([np.inf, -np.inf], np.nan)
+        
+        stability_df = pd.DataFrame({
+            'corr_std': rolling_std,
+            'corr_mean': rolling_mean,
+            'stability_cv': cv
+        })
+        
+        st.plotly_chart(plot_correlation_stability(stability_df), use_container_width=True)
+        
+        stability = calculate_correlation_stability(corr_series, window=60)
+        
+        col1, col2, col3 = st.columns(3)
+        col1.metric("CV Medio", f"{stability['mean_cv']:.3f}")
+        col2.metric("CV Actual", f"{stability['current_cv']:.3f}")
+        col3.metric("Desv. Std Corr", f"{stability['std_corr']:.3f}")
+        
+        # Resetear flag
+        st.session_state.run_analysis = False
+    
+    else:
+        st.info("👆 Configura el análisis y presiona **'🔄 Actualizar Análisis'** para ver los resultados, o selecciona un par desde la pestaña de búsqueda")
+
+# ============================================================================
+# TAB 3: ANÁLISIS DETALLADO TOP PARES
+# ============================================================================
+
+with tab3:
+    st.header("📈 Análisis Detallado Top Pares")
+    
+    if 'positive_pairs' in st.session_state and 'negative_pairs' in st.session_state:
+        
+        # Rolling Correlation Top 10 Positivos
+        st.markdown("### 📈 Rolling Correlation - Top 10 Pares Positivos")
+        
+        if len(st.session_state.positive_pairs) > 0:
+            top_pos = st.session_state.positive_pairs.head(10).to_dict('records')
+            
+            with st.spinner("Generando gráficos de correlación..."):
+                fig_pos = plot_multiple_rolling_correlations(df_all_prices, top_pos, window=rolling_window)
+                st.plotly_chart(fig_pos, use_container_width=True)
+        else:
+            st.info("No hay pares con correlación positiva")
+        
+        st.markdown("---")
+        
+        # Rolling Correlation Top 10 Negativos
+        st.markdown("### 📉 Rolling Correlation - Top 10 Pares Negativos")
+        
+        if len(st.session_state.negative_pairs) > 0:
+            top_neg = st.session_state.negative_pairs.head(10).to_dict('records')
+            
+            with st.spinner("Generando gráficos de correlación..."):
+                fig_neg = plot_multiple_rolling_correlations(df_all_prices, top_neg, window=rolling_window)
+                st.plotly_chart(fig_neg, use_container_width=True)
+        else:
+            st.info("No hay pares con correlación negativa")
+        
+        st.markdown("---")
+        
+        # Comparación de Métricas
+        st.markdown("### 📊 Comparación de Métricas - Todos los Pares Encontrados")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if len(st.session_state.positive_pairs) > 0:
+                st.markdown("#### 📈 Pares Positivos")
+                
+                # Gráfico de Score vs Hurst
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=st.session_state.positive_pairs['score'],
+                    y=st.session_state.positive_pairs['hurst'],
+                    mode='markers',
+                    marker=dict(
+                        size=st.session_state.positive_pairs['corr_stability_cv'] * 100,
+                        color=st.session_state.positive_pairs['mean_correlation'],
+                        colorscale='Viridis',
+                        showscale=True,
+                        colorbar=dict(title="Corr")
+                    ),
+                    text=[f"{ASSETS[row['asset1']]['label']} / {ASSETS[row['asset2']]['label']}" 
+                          for _, row in st.session_state.positive_pairs.iterrows()],
+                    hovertemplate='<b>%{text}</b><br>Score: %{x:.1f}<br>Hurst: %{y:.3f}<extra></extra>'
+                ))
+                
+                fig.update_layout(
+                    title='Score vs Hurst (tamaño = CV)',
+                    xaxis_title='Score',
+                    yaxis_title='Hurst Exponent',
+                    template='plotly_dark',
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+        
+        with col2:
+            if len(st.session_state.negative_pairs) > 0:
+                st.markdown("#### 📉 Pares Negativos")
+                
+                # Gráfico de Score vs Hurst
+                fig = go.Figure()
+                fig.add_trace(go.Scatter(
+                    x=st.session_state.negative_pairs['score'],
+                    y=st.session_state.negative_pairs['hurst'],
+                    mode='markers',
+                    marker=dict(
+                        size=st.session_state.negative_pairs['corr_stability_cv'] * 100,
+                        color=st.session_state.negative_pairs['mean_correlation'],
+                        colorscale='Plasma',
+                        showscale=True,
+                        colorbar=dict(title="Corr")
+                    ),
+                    text=[f"{ASSETS[row['asset1']]['label']} / {ASSETS[row['asset2']]['label']}" 
+                          for _, row in st.session_state.negative_pairs.iterrows()],
+                    hovertemplate='<b>%{text}</b><br>Score: %{x:.1f}<br>Hurst: %{y:.3f}<extra></extra>'
+                ))
+                
+                fig.update_layout(
+                    title='Score vs Hurst (tamaño = CV)',
+                    xaxis_title='Score',
+                    yaxis_title='Hurst Exponent',
+                    template='plotly_dark',
+                    height=400
+                )
+                
+                st.plotly_chart(fig, use_container_width=True)
+    
+    else:
+        st.info("👆 Primero ejecuta la búsqueda de pares en la pestaña 'Búsqueda de Pares'")
 
 # ============================================================================
 # TAB 4: BACKTESTING
@@ -1502,7 +1836,7 @@ with tab4:
                     'exit_spread': '{:.4f}',
                     'pnl': '${:,.2f}'
                 }),
-                use_container_width=True,
+                width='stretch',
                 height=400
             )
             
@@ -1542,7 +1876,7 @@ with tab4:
         st.session_state.run_backtest = False
     
     else:
-        st.info("👆 Configura los parámetros y presiona **'🚀 Ejecutar Backtest'**")
+        st.info("👆 Configura los parámetros y presiona **'🚀 Ejecutar Backtest'**, o selecciona un par desde la pestaña de búsqueda")
 
 # Footer
 st.sidebar.markdown("---")
