@@ -7,8 +7,8 @@ from plotly.subplots import make_subplots
 import time
 from datetime import datetime, timedelta
 from scipy import stats
-from scipy.stats import spearmanr, kendalltau
-from statsmodels.tsa.stattools import adfuller, coint
+from scipy.signal import correlate
+from scipy.stats import spearmanr
 import warnings
 import pickle
 import os
@@ -17,8 +17,8 @@ warnings.filterwarnings('ignore')
 
 # Configuración de la página
 st.set_page_config(
-    page_title="Pairs Trading - Beta & Correlation Analysis",
-    page_icon="📊",
+    page_title="Lead-Lag Analysis - Pairs Trading",
+    page_icon="🔄",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -29,7 +29,7 @@ st.markdown("""
     .main {background-color: #0e1117;}
     .stMetric {background-color: #1e2130; padding: 15px; border-radius: 10px;}
     h1, h2, h3 {color: #ffffff;}
-    .beta-card {
+    .leader-card {
         background: linear-gradient(135deg, #1e3a5f 0%, #2d5a87 100%);
         padding: 20px;
         border-radius: 15px;
@@ -201,70 +201,6 @@ def download_all_assets(delay=3, start_date='2015-01-01'):
     
     return all_data, metadata
 
-def update_existing_data(existing_data, existing_metadata, delay=2):
-    """Actualiza datos existentes"""
-    updated_data = existing_data.copy()
-    
-    last_update = existing_metadata['last_update']
-    start_date = (last_update + timedelta(days=1)).strftime('%Y-%m-%d')
-    end_date = datetime.now().strftime('%Y-%m-%d')
-    
-    if start_date >= end_date:
-        st.info("✅ Los datos ya están actualizados")
-        return existing_data, existing_metadata
-    
-    progress_bar = st.progress(0)
-    status_text = st.empty()
-    
-    updated_count = 0
-    failed = []
-    
-    total = len(existing_data)
-    
-    for idx, (key, old_data) in enumerate(existing_data.items()):
-        asset_info = ASSETS.get(key)
-        if not asset_info:
-            continue
-            
-        symbol = asset_info['symbol']
-        
-        status_text.text(f"🔄 Actualizando {asset_info['label']} ({idx+1}/{total})...")
-        
-        new_data = fetch_asset_data(symbol, start_date, end_date)
-        
-        if new_data is not None and len(new_data) > 0:
-            combined = pd.concat([old_data, new_data])
-            combined = combined[~combined.index.duplicated(keep='last')]
-            combined = combined.sort_index()
-            
-            updated_data[key] = combined
-            updated_count += 1
-            status_text.text(f"✅ {asset_info['label']} - +{len(new_data)} días")
-        else:
-            failed.append(key)
-            status_text.text(f"⚠️ {asset_info['label']} - Sin actualización")
-        
-        progress_bar.progress((idx + 1) / total)
-        
-        if idx < total - 1:
-            time.sleep(delay)
-    
-    progress_bar.empty()
-    status_text.empty()
-    
-    new_metadata = {
-        'last_update': datetime.now(),
-        'total_assets': len(updated_data),
-        'failed_assets': failed,
-        'date_range': {
-            'start': existing_metadata['date_range']['start'],
-            'end': end_date
-        },
-        'updated_count': updated_count
-    }
-    
-    return updated_data, new_metadata
-
 def merge_asset_data(data_dict):
     """Combina todos los datos en un único DataFrame"""
     if not data_dict:
@@ -294,500 +230,297 @@ def merge_asset_data(data_dict):
     return df
 
 # ============================================================================
-# FUNCIONES DE CÁLCULO DE BETA
+# FUNCIONES DE LEAD-LAG ANALYSIS
 # ============================================================================
 
-def calculate_beta_ols(prices1, prices2, use_log=True):
+def calculate_cross_correlation(returns1, returns2, max_lag=20):
     """
-    Calcula Beta usando OLS (Ordinary Least Squares)
-    Beta = Cov(ln(P1), ln(P2)) / Var(ln(P2))
+    Calcula correlación cruzada entre dos series para diferentes lags.
     
-    Spread = ln(P1) - Beta * ln(P2)
+    Lag positivo: returns1 lidera (returns2 sigue)
+    Lag negativo: returns2 lidera (returns1 sigue)
+    
+    Returns:
+        DataFrame con lags y correlaciones
     """
-    if use_log:
-        y = np.log(prices1).dropna()
-        x = np.log(prices2).dropna()
-    else:
-        y = prices1.dropna()
-        x = prices2.dropna()
-    
-    common_idx = y.index.intersection(x.index)
-    y = y.loc[common_idx]
-    x = x.loc[common_idx]
-    
-    if len(x) < 2:
-        return np.nan, np.nan
-    
-    # Beta = Cov(Y, X) / Var(X)
-    cov = np.cov(y, x)[0, 1]
-    var = np.var(x, ddof=1)
-    
-    if var == 0:
-        return np.nan, np.nan
-    
-    beta = cov / var
-    
-    # Alpha (intercepto)
-    alpha = np.mean(y) - beta * np.mean(x)
-    
-    return beta, alpha
-
-
-def calculate_beta_theil_sen(prices1, prices2, use_log=True):
-    """
-    Calcula Beta usando Theil-Sen (robusto a outliers)
-    Usa la mediana de las pendientes entre todos los pares de puntos
-    """
-    if use_log:
-        y = np.log(prices1).dropna()
-        x = np.log(prices2).dropna()
-    else:
-        y = prices1.dropna()
-        x = prices2.dropna()
-    
-    common_idx = y.index.intersection(x.index)
-    y = y.loc[common_idx].values
-    x = x.loc[common_idx].values
-    
-    if len(x) < 2:
-        return np.nan, np.nan
-    
-    try:
-        result = stats.theilslopes(y, x)
-        beta = result[0]  # slope
-        alpha = result[1]  # intercept
-        return beta, alpha
-    except:
-        return np.nan, np.nan
-
-
-def calculate_rolling_beta(prices1, prices2, window=100, method='ols', use_log=True):
-    """
-    Calcula Beta rolling usando ventana deslizante
-    
-    Args:
-        method: 'ols' o 'theil_sen'
-    """
-    if use_log:
-        y = np.log(prices1).dropna()
-        x = np.log(prices2).dropna()
-    else:
-        y = prices1.dropna()
-        x = prices2.dropna()
-    
-    common_idx = y.index.intersection(x.index)
-    y = y.loc[common_idx]
-    x = x.loc[common_idx]
-    
-    betas = []
-    alphas = []
-    dates = []
-    
-    for i in range(window, len(y)):
-        window_y = y.iloc[i-window:i]
-        window_x = x.iloc[i-window:i]
-        
-        if method == 'ols':
-            cov = np.cov(window_y, window_x)[0, 1]
-            var = np.var(window_x, ddof=1)
-            if var != 0:
-                beta = cov / var
-                alpha = np.mean(window_y) - beta * np.mean(window_x)
-            else:
-                beta = np.nan
-                alpha = np.nan
-        else:  # theil_sen
-            try:
-                result = stats.theilslopes(window_y.values, window_x.values)
-                beta = result[0]
-                alpha = result[1]
-            except:
-                beta = np.nan
-                alpha = np.nan
-        
-        betas.append(beta)
-        alphas.append(alpha)
-        dates.append(y.index[i])
-    
-    return pd.DataFrame({
-        'date': dates,
-        'beta': betas,
-        'alpha': alphas
-    })
-
-
-def calculate_beta_volatility_adjusted(prices1, prices2, window=100):
-    """
-    Beta ajustado por volatilidad
-    Beta = (σ1/σ2) * correlation
-    """
-    returns1 = np.log(prices1 / prices1.shift(1)).dropna()
-    returns2 = np.log(prices2 / prices2.shift(1)).dropna()
-    
-    common_idx = returns1.index.intersection(returns2.index)
-    returns1 = returns1.loc[common_idx]
-    returns2 = returns2.loc[common_idx]
-    
-    betas = []
-    dates = []
-    
-    for i in range(window, len(returns1)):
-        window_r1 = returns1.iloc[i-window:i]
-        window_r2 = returns2.iloc[i-window:i]
-        
-        std1 = window_r1.std()
-        std2 = window_r2.std()
-        corr = window_r1.corr(window_r2)
-        
-        if std2 != 0:
-            beta = (std1 / std2) * corr
-        else:
-            beta = np.nan
-        
-        betas.append(beta)
-        dates.append(returns1.index[i])
-    
-    return pd.DataFrame({
-        'date': dates,
-        'beta': betas
-    })
-
-
-def analyze_beta_stability(beta_series):
-    """Analiza la estabilidad del beta en el tiempo"""
-    beta_values = beta_series['beta'].dropna()
-    
-    if len(beta_values) < 10:
-        return None
-    
-    return {
-        'mean': beta_values.mean(),
-        'std': beta_values.std(),
-        'cv': beta_values.std() / abs(beta_values.mean()) if beta_values.mean() != 0 else np.nan,
-        'min': beta_values.min(),
-        'max': beta_values.max(),
-        'range': beta_values.max() - beta_values.min(),
-        'current': beta_values.iloc[-1],
-        'distance_from_1': abs(beta_values.mean() - 1),
-        'pct_above_1': (beta_values > 1).sum() / len(beta_values) * 100,
-        'pct_below_1': (beta_values < 1).sum() / len(beta_values) * 100,
-    }
-
-
-# ============================================================================
-# FUNCIONES DE SPREAD CON BETA
-# ============================================================================
-
-def calculate_spread_with_beta(prices1, prices2, beta, use_log=True):
-    """
-    Calcula el spread usando el beta estimado
-    Spread = ln(P1) - beta * ln(P2)
-    """
-    if use_log:
-        log_p1 = np.log(prices1)
-        log_p2 = np.log(prices2)
-        spread = log_p1 - beta * log_p2
-    else:
-        spread = prices1 - beta * prices2
-    
-    return spread.dropna()
-
-
-def calculate_zscore_spread(spread, window=100):
-    """Calcula Z-Score del spread"""
-    mean = spread.rolling(window).mean()
-    std = spread.rolling(window).std()
-    zscore = (spread - mean) / std
-    return zscore.dropna()
-
-
-# ============================================================================
-# FUNCIONES DE CORRELACIÓN MÚLTIPLE
-# ============================================================================
-
-def calculate_all_correlations(prices1, prices2, window=100):
-    """
-    Calcula múltiples tipos de correlación:
-    - Pearson (lineal)
-    - Spearman (monótona, rank-based)
-    - Kendall (concordancia)
-    """
-    returns1 = np.log(prices1 / prices1.shift(1)).dropna()
-    returns2 = np.log(prices2 / prices2.shift(1)).dropna()
-    
-    common_idx = returns1.index.intersection(returns2.index)
-    returns1 = returns1.loc[common_idx]
-    returns2 = returns2.loc[common_idx]
-    
-    pearson_list = []
-    spearman_list = []
-    kendall_list = []
-    dates = []
-    
-    for i in range(window, len(returns1)):
-        window_r1 = returns1.iloc[i-window:i]
-        window_r2 = returns2.iloc[i-window:i]
-        
-        # Pearson
-        pearson = window_r1.corr(window_r2)
-        
-        # Spearman
-        spearman, _ = spearmanr(window_r1, window_r2)
-        
-        # Kendall
-        kendall, _ = kendalltau(window_r1, window_r2)
-        
-        pearson_list.append(pearson)
-        spearman_list.append(spearman)
-        kendall_list.append(kendall)
-        dates.append(returns1.index[i])
-    
-    return pd.DataFrame({
-        'date': dates,
-        'pearson': pearson_list,
-        'spearman': spearman_list,
-        'kendall': kendall_list
-    })
-
-
-def analyze_correlation_divergence(corr_df):
-    """
-    Analiza la divergencia entre tipos de correlación
-    Si Pearson y Spearman divergen mucho, la relación no es lineal
-    """
-    if len(corr_df) < 10:
-        return None
-    
-    pearson = corr_df['pearson']
-    spearman = corr_df['spearman']
-    kendall = corr_df['kendall']
-    
-    divergence_ps = abs(pearson - spearman).mean()
-    divergence_pk = abs(pearson - kendall).mean()
-    divergence_sk = abs(spearman - kendall).mean()
-    
-    return {
-        'pearson_mean': pearson.mean(),
-        'spearman_mean': spearman.mean(),
-        'kendall_mean': kendall.mean(),
-        'divergence_pearson_spearman': divergence_ps,
-        'divergence_pearson_kendall': divergence_pk,
-        'divergence_spearman_kendall': divergence_sk,
-        'is_linear': divergence_ps < 0.1,  # Si divergencia < 0.1, relación es lineal
-        'recommendation': 'Pearson' if divergence_ps < 0.1 else 'Spearman'
-    }
-
-
-# ============================================================================
-# FUNCIONES DE ANÁLISIS EXISTENTES (MEJORADAS)
-# ============================================================================
-
-def calculate_log_ratio_spread(prices1, prices2):
-    """Calcula spread usando log-ratio (beta=1)"""
-    spread = np.log(prices1) - np.log(prices2)
-    return spread.dropna()
-
-def calculate_rolling_correlation(df, asset1, asset2, window=30, step=1):
-    """Calcula la correlación móvil entre dos activos"""
     correlations = []
-    dates = []
     
-    prices1 = df[asset1]
-    prices2 = df[asset2]
+    for lag in range(-max_lag, max_lag + 1):
+        if lag > 0:
+            # returns1 adelantado (lidera)
+            r1 = returns1.iloc[:-lag].values
+            r2 = returns2.iloc[lag:].values
+        elif lag < 0:
+            # returns2 adelantado (lidera)
+            r1 = returns1.iloc[-lag:].values
+            r2 = returns2.iloc[:lag].values
+        else:
+            r1 = returns1.values
+            r2 = returns2.values
+        
+        if len(r1) > 10:
+            corr = np.corrcoef(r1, r2)[0, 1]
+        else:
+            corr = np.nan
+        
+        correlations.append({
+            'lag': lag,
+            'correlation': corr
+        })
     
-    for i in range(window, len(df), step):
-        window_data = df.iloc[i-window:i]
-        corr = window_data[asset1].corr(window_data[asset2])
-        correlations.append(corr)
-        dates.append(df.index[i])
-    
-    return pd.DataFrame({'date': dates, 'correlation': correlations})
+    return pd.DataFrame(correlations)
 
-def calculate_hurst_exponent(series, max_lag=100):
-    """Calcula el Hurst Exponent"""
-    lags = range(2, min(max_lag, len(series)//2))
-    tau = [np.std(np.subtract(series[lag:].values, series[:-lag].values)) for lag in lags]
-    
-    try:
-        poly = np.polyfit(np.log(lags), np.log(tau), 1)
-        return poly[0] * 2.0
-    except:
-        return np.nan
 
-def adf_test(series):
-    """Test de estacionariedad"""
-    try:
-        result = adfuller(series.dropna())
-        return {'adf_stat': result[0], 'pvalue': result[1], 'stationary': result[1] < 0.05}
-    except:
-        return {'adf_stat': np.nan, 'pvalue': np.nan, 'stationary': False}
-
-def calculate_half_life(spread):
-    """Calcula half-life del mean reversion"""
-    spread_lag = spread.shift(1)
-    spread_diff = spread - spread_lag
-    spread_lag = spread_lag.dropna()
-    spread_diff = spread_diff.dropna()
+def calculate_rolling_lead_lag(returns1, returns2, window=60, max_lag=10):
+    """
+    Calcula el lag óptimo en ventana rolling para detectar cambios de liderazgo.
     
-    common_idx = spread_lag.index.intersection(spread_diff.index)
-    spread_lag = spread_lag.loc[common_idx]
-    spread_diff = spread_diff.loc[common_idx]
+    Returns:
+        DataFrame con fecha, lag óptimo, correlación máxima, y líder
+    """
+    results = []
     
-    if len(spread_lag) < 2:
-        return np.nan
-    
-    model = np.polyfit(spread_lag, spread_diff, 1)
-    half_life = -np.log(2) / model[0] if model[0] < 0 else np.nan
-    return half_life
-
-def test_cointegration(prices1, prices2):
-    """Test de cointegración"""
-    try:
-        score, pvalue, _ = coint(prices1, prices2)
-        return {'score': score, 'pvalue': pvalue, 'cointegrated': pvalue < 0.05}
-    except:
-        return {'score': np.nan, 'pvalue': np.nan, 'cointegrated': False}
-
-def calculate_correlation_stability(corr_series, window=60):
-    """Mide estabilidad de correlación"""
-    rolling_std = corr_series.rolling(window).std()
-    rolling_mean = corr_series.rolling(window).mean()
-    cv = (rolling_std / rolling_mean.abs()).replace([np.inf, -np.inf], np.nan)
-    
-    return {
-        'mean_cv': cv.mean(),
-        'current_cv': cv.iloc[-1] if len(cv) > 0 else np.nan,
-        'std_corr': corr_series.std()
-    }
-
-def calculate_spread_volatility(spread):
-    """Calcula volatilidad del spread"""
-    returns = spread.diff()
-    return returns.std()
-
-def calculate_conditional_correlation(returns1, returns2):
-    """Correlación en diferentes condiciones de mercado"""
-    mask_positive = (returns1 > 0) & (returns2 > 0)
-    corr_positive = returns1[mask_positive].corr(returns2[mask_positive])
-    
-    mask_negative = (returns1 < 0) & (returns2 < 0)
-    corr_negative = returns1[mask_negative].corr(returns2[mask_negative])
-    
-    vol_threshold = returns1.std() * 2
-    mask_crisis = (returns1.abs() > vol_threshold) | (returns2.abs() > vol_threshold)
-    corr_crisis = returns1[mask_crisis].corr(returns2[mask_crisis])
-    
-    return {
-        'positive_markets': corr_positive,
-        'negative_markets': corr_negative,
-        'high_volatility': corr_crisis,
-        'normal': returns1.corr(returns2)
-    }
-
-# ============================================================================
-# FUNCIONES DE ANÁLISIS DE ESTACIONALIDAD
-# ============================================================================
-
-def analyze_seasonality(df, asset1, asset2, lookback=100):
-    """Analiza patrones estacionales en la correlación y el spread"""
-    prices1 = df[asset1]
-    prices2 = df[asset2]
-    
-    spread = calculate_log_ratio_spread(prices1, prices2)
-    
-    returns1 = np.log(prices1 / prices1.shift(1))
-    returns2 = np.log(prices2 / prices2.shift(1))
-    corr_rolling = returns1.rolling(lookback).corr(returns2)
-    
-    spread_df = spread.to_frame('spread')
-    spread_df['month'] = spread_df.index.month
-    spread_df['quarter'] = spread_df.index.quarter
-    spread_df['year'] = spread_df.index.year
-    spread_df['day_of_year'] = spread_df.index.dayofyear
-    spread_df['volatility'] = spread_df['spread'].rolling(30).std()
-    
-    corr_df = corr_rolling.to_frame('correlation')
-    corr_df['month'] = corr_df.index.month
-    corr_df['quarter'] = corr_df.index.quarter
-    corr_df['year'] = corr_df.index.year
-    
-    monthly_corr = corr_df.groupby('month')['correlation'].agg(['mean', 'std', 'min', 'max'])
-    monthly_spread_vol = spread_df.groupby('month')['volatility'].mean()
-    
-    quarterly_corr = corr_df.groupby('quarter')['correlation'].agg(['mean', 'std', 'min', 'max'])
-    quarterly_spread_vol = spread_df.groupby('quarter')['volatility'].mean()
-    
-    yearly_corr = corr_df.groupby('year')['correlation'].agg(['mean', 'std', 'min', 'max'])
-    yearly_spread_vol = spread_df.groupby('year')['volatility'].mean()
-    
-    monthly_spread_stats = spread_df.groupby('month')['spread'].agg(['mean', 'std'])
-    
-    return {
-        'monthly_corr': monthly_corr,
-        'monthly_spread_vol': monthly_spread_vol,
-        'monthly_spread_stats': monthly_spread_stats,
-        'quarterly_corr': quarterly_corr,
-        'quarterly_spread_vol': quarterly_spread_vol,
-        'yearly_corr': yearly_corr,
-        'yearly_spread_vol': yearly_spread_vol,
-        'spread_df': spread_df,
-        'corr_df': corr_df
-    }
-
-def calculate_historical_periods(df, asset1, asset2):
-    """Calcula estadísticas por períodos históricos significativos"""
-    prices1 = df[asset1]
-    prices2 = df[asset2]
-    
-    spread = calculate_log_ratio_spread(prices1, prices2)
-    
-    periods = []
-    
-    historical_events = [
-        ('2015-2016', '2015-01-01', '2016-12-31', 'Período 2015-2016'),
-        ('2017-2018', '2017-01-01', '2018-12-31', 'Período 2017-2018'),
-        ('2019', '2019-01-01', '2019-12-31', 'Pre-COVID 2019'),
-        ('COVID-2020', '2020-01-01', '2020-12-31', 'COVID-19 2020'),
-        ('2021', '2021-01-01', '2021-12-31', 'Recuperación 2021'),
-        ('2022', '2022-01-01', '2022-12-31', 'Inflación 2022'),
-        ('2023', '2023-01-01', '2023-12-31', 'Normalización 2023'),
-        ('2024-2025', '2024-01-01', '2025-12-31', 'Período 2024-2025'),
-    ]
-    
-    for period_id, start, end, label in historical_events:
-        try:
-            mask = (spread.index >= start) & (spread.index <= end)
-            period_spread = spread[mask]
-            period_p1 = prices1[mask]
-            period_p2 = prices2[mask]
+    for i in range(window + max_lag, len(returns1)):
+        window_r1 = returns1.iloc[i-window-max_lag:i]
+        window_r2 = returns2.iloc[i-window-max_lag:i]
+        
+        best_lag = 0
+        best_corr = -1
+        
+        for lag in range(-max_lag, max_lag + 1):
+            if lag > 0:
+                r1 = window_r1.iloc[max_lag:-lag if lag > 0 else None].values
+                r2 = window_r2.iloc[max_lag+lag:].values
+            elif lag < 0:
+                r1 = window_r1.iloc[max_lag-lag:].values
+                r2 = window_r2.iloc[max_lag:lag if lag < 0 else None].values
+            else:
+                r1 = window_r1.iloc[max_lag:].values
+                r2 = window_r2.iloc[max_lag:].values
             
-            if len(period_spread) > 30:
-                period_corr = period_p1.corr(period_p2)
+            if len(r1) > 10 and len(r2) > 10:
+                min_len = min(len(r1), len(r2))
+                corr = abs(np.corrcoef(r1[:min_len], r2[:min_len])[0, 1])
                 
-                # Calcular beta del período
-                beta_ols, _ = calculate_beta_ols(period_p1, period_p2)
-                
-                periods.append({
-                    'period': label,
-                    'start': start,
-                    'end': end,
-                    'days': len(period_spread),
-                    'correlation': period_corr,
-                    'beta_ols': beta_ols,
-                    'spread_mean': period_spread.mean(),
-                    'spread_std': period_spread.std(),
-                    'spread_min': period_spread.min(),
-                    'spread_max': period_spread.max()
-                })
-        except:
-            continue
+                if corr > best_corr:
+                    best_corr = corr
+                    # Calcular correlación con signo para el mejor lag
+                    best_lag = lag
+                    signed_corr = np.corrcoef(r1[:min_len], r2[:min_len])[0, 1]
+        
+        # Determinar líder
+        if best_lag > 0:
+            leader = 'asset1'
+        elif best_lag < 0:
+            leader = 'asset2'
+        else:
+            leader = 'simultaneous'
+        
+        results.append({
+            'date': returns1.index[i],
+            'optimal_lag': best_lag,
+            'max_correlation': best_corr,
+            'signed_correlation': signed_corr if 'signed_corr' in dir() else best_corr,
+            'leader': leader
+        })
     
-    return pd.DataFrame(periods)
+    return pd.DataFrame(results)
 
 
-def find_best_pairs(df, correlation_type='positive', min_correlation=0.5, 
-                    max_cv=0.4, lookback=100, include_beta=True):
-    """Encuentra los mejores pares usando criterios estadísticos incluyendo beta"""
+def calculate_granger_causality_simple(returns1, returns2, max_lag=5):
+    """
+    Versión simplificada de test de causalidad de Granger.
+    Compara R² de modelos con y sin lags del otro activo.
+    
+    Returns:
+        Dict con estadísticas de causalidad en ambas direcciones
+    """
+    from sklearn.linear_model import LinearRegression
+    from sklearn.metrics import r2_score
+    
+    # Crear matrices de lags
+    n = len(returns1)
+    
+    # returns1 -> returns2 (¿returns1 causa returns2?)
+    X_base = np.column_stack([returns2.shift(i).values for i in range(1, max_lag + 1)])
+    X_full = np.column_stack([
+        X_base,
+        *[returns1.shift(i).values for i in range(1, max_lag + 1)]
+    ])
+    y = returns2.values
+    
+    # Eliminar NaN
+    valid_idx = ~np.isnan(X_full).any(axis=1) & ~np.isnan(y)
+    X_base_clean = X_base[valid_idx][:, ~np.isnan(X_base[valid_idx]).any(axis=0)]
+    X_full_clean = X_full[valid_idx]
+    y_clean = y[valid_idx]
+    
+    if len(y_clean) < max_lag * 3:
+        return None
+    
+    # Modelos
+    model_base = LinearRegression().fit(X_base_clean, y_clean)
+    model_full = LinearRegression().fit(X_full_clean, y_clean)
+    
+    r2_base_1to2 = r2_score(y_clean, model_base.predict(X_base_clean))
+    r2_full_1to2 = r2_score(y_clean, model_full.predict(X_full_clean))
+    
+    # returns2 -> returns1 (¿returns2 causa returns1?)
+    X_base = np.column_stack([returns1.shift(i).values for i in range(1, max_lag + 1)])
+    X_full = np.column_stack([
+        X_base,
+        *[returns2.shift(i).values for i in range(1, max_lag + 1)]
+    ])
+    y = returns1.values
+    
+    valid_idx = ~np.isnan(X_full).any(axis=1) & ~np.isnan(y)
+    X_base_clean = X_base[valid_idx][:, ~np.isnan(X_base[valid_idx]).any(axis=0)]
+    X_full_clean = X_full[valid_idx]
+    y_clean = y[valid_idx]
+    
+    model_base = LinearRegression().fit(X_base_clean, y_clean)
+    model_full = LinearRegression().fit(X_full_clean, y_clean)
+    
+    r2_base_2to1 = r2_score(y_clean, model_base.predict(X_base_clean))
+    r2_full_2to1 = r2_score(y_clean, model_full.predict(X_full_clean))
+    
+    # Mejora en R²
+    improvement_1to2 = r2_full_1to2 - r2_base_1to2
+    improvement_2to1 = r2_full_2to1 - r2_base_2to1
+    
+    return {
+        'asset1_causes_asset2': {
+            'r2_base': r2_base_1to2,
+            'r2_full': r2_full_1to2,
+            'improvement': improvement_1to2,
+            'causes': improvement_1to2 > 0.01  # Umbral arbitrario
+        },
+        'asset2_causes_asset1': {
+            'r2_base': r2_base_2to1,
+            'r2_full': r2_full_2to1,
+            'improvement': improvement_2to1,
+            'causes': improvement_2to1 > 0.01
+        },
+        'dominant_leader': 'asset1' if improvement_1to2 > improvement_2to1 else 'asset2',
+        'bidirectional': improvement_1to2 > 0.01 and improvement_2to1 > 0.01
+    }
+
+
+def analyze_leadership_stability(lead_lag_df):
+    """
+    Analiza la estabilidad del liderazgo en el tiempo.
+    """
+    if len(lead_lag_df) < 10:
+        return None
+    
+    # Conteo de liderazgo
+    leadership_counts = lead_lag_df['leader'].value_counts()
+    total = len(lead_lag_df)
+    
+    # Estadísticas de lag
+    lag_stats = lead_lag_df['optimal_lag'].describe()
+    
+    # Cambios de liderazgo
+    leadership_changes = (lead_lag_df['leader'] != lead_lag_df['leader'].shift(1)).sum()
+    
+    # Rachas de liderazgo
+    lead_lag_df['leadership_streak'] = (lead_lag_df['leader'] != lead_lag_df['leader'].shift(1)).cumsum()
+    streak_lengths = lead_lag_df.groupby('leadership_streak').size()
+    
+    return {
+        'leadership_distribution': {
+            'asset1_pct': leadership_counts.get('asset1', 0) / total * 100,
+            'asset2_pct': leadership_counts.get('asset2', 0) / total * 100,
+            'simultaneous_pct': leadership_counts.get('simultaneous', 0) / total * 100,
+        },
+        'lag_statistics': {
+            'mean': lag_stats['mean'],
+            'std': lag_stats['std'],
+            'median': lag_stats['50%'],
+            'min': lag_stats['min'],
+            'max': lag_stats['max'],
+        },
+        'stability': {
+            'total_changes': leadership_changes,
+            'change_frequency': leadership_changes / total * 100,
+            'avg_streak_length': streak_lengths.mean(),
+            'max_streak_length': streak_lengths.max(),
+        },
+        'dominant_leader': leadership_counts.idxmax() if len(leadership_counts) > 0 else 'unknown'
+    }
+
+
+def calculate_lead_lag_by_regime(returns1, returns2, max_lag=10):
+    """
+    Calcula lead-lag en diferentes regímenes de mercado:
+    - Alta volatilidad vs baja volatilidad
+    - Mercados alcistas vs bajistas
+    """
+    # Volatilidad rolling
+    vol = returns1.rolling(20).std()
+    vol_median = vol.median()
+    
+    high_vol_mask = vol > vol_median
+    low_vol_mask = vol <= vol_median
+    
+    # Mercados alcistas/bajistas (basado en retornos acumulados de 20 días)
+    cum_returns = returns1.rolling(20).sum()
+    bull_mask = cum_returns > 0
+    bear_mask = cum_returns <= 0
+    
+    results = {}
+    
+    for regime_name, mask in [
+        ('high_volatility', high_vol_mask),
+        ('low_volatility', low_vol_mask),
+        ('bull_market', bull_mask),
+        ('bear_market', bear_mask)
+    ]:
+        r1_regime = returns1[mask].dropna()
+        r2_regime = returns2[mask].dropna()
+        
+        if len(r1_regime) > max_lag * 3:
+            # Encontrar lag óptimo para este régimen
+            common_idx = r1_regime.index.intersection(r2_regime.index)
+            r1_aligned = r1_regime.loc[common_idx]
+            r2_aligned = r2_regime.loc[common_idx]
+            
+            best_lag = 0
+            best_corr = -1
+            
+            for lag in range(-max_lag, max_lag + 1):
+                if lag > 0:
+                    r1 = r1_aligned.iloc[:-lag].values
+                    r2 = r2_aligned.iloc[lag:].values
+                elif lag < 0:
+                    r1 = r1_aligned.iloc[-lag:].values
+                    r2 = r2_aligned.iloc[:lag].values
+                else:
+                    r1 = r1_aligned.values
+                    r2 = r2_aligned.values
+                
+                if len(r1) > 10:
+                    corr = abs(np.corrcoef(r1, r2)[0, 1])
+                    if corr > best_corr:
+                        best_corr = corr
+                        best_lag = lag
+            
+            results[regime_name] = {
+                'optimal_lag': best_lag,
+                'max_correlation': best_corr,
+                'leader': 'asset1' if best_lag > 0 else ('asset2' if best_lag < 0 else 'simultaneous'),
+                'n_observations': len(r1_aligned)
+            }
+        else:
+            results[regime_name] = None
+    
+    return results
+
+
+def find_pairs_with_lead_lag(df, min_correlation=0.4, max_lag=10, lookback=252):
+    """
+    Encuentra pares con relaciones lead-lag significativas.
+    """
     assets = df.columns
     candidates = []
     
@@ -801,155 +534,114 @@ def find_best_pairs(df, correlation_type='positive', min_correlation=0.5,
         for asset2 in assets[i+1:]:
             pair_idx += 1
             progress_bar.progress(pair_idx / total_pairs)
-            status_text.text(f"Analizando par {pair_idx}/{total_pairs}: {ASSETS[asset1]['label']} vs {ASSETS[asset2]['label']}")
+            status_text.text(f"Analizando {pair_idx}/{total_pairs}: {ASSETS[asset1]['label'][:15]} vs {ASSETS[asset2]['label'][:15]}")
             
             prices1 = df[asset1].dropna()
             prices2 = df[asset2].dropna()
             
             common_idx = prices1.index.intersection(prices2.index)
-            if len(common_idx) < 252:
+            if len(common_idx) < lookback:
                 continue
             
-            p1 = prices1.loc[common_idx]
-            p2 = prices2.loc[common_idx]
+            # Usar solo últimos N días
+            common_idx = common_idx[-lookback:]
             
-            mean_corr = p1.corr(p2)
+            returns1 = np.log(prices1.loc[common_idx] / prices1.loc[common_idx].shift(1)).dropna()
+            returns2 = np.log(prices2.loc[common_idx] / prices2.loc[common_idx].shift(1)).dropna()
             
-            if correlation_type == 'positive':
-                if mean_corr < min_correlation:
-                    continue
+            common_idx_returns = returns1.index.intersection(returns2.index)
+            returns1 = returns1.loc[common_idx_returns]
+            returns2 = returns2.loc[common_idx_returns]
+            
+            if len(returns1) < 100:
+                continue
+            
+            # Correlación base
+            base_corr = returns1.corr(returns2)
+            
+            if abs(base_corr) < min_correlation:
+                continue
+            
+            # Cross-correlation
+            cross_corr = calculate_cross_correlation(returns1, returns2, max_lag)
+            
+            # Encontrar lag óptimo
+            best_row = cross_corr.loc[cross_corr['correlation'].abs().idxmax()]
+            optimal_lag = int(best_row['lag'])
+            max_corr = best_row['correlation']
+            
+            # Mejora sobre correlación base
+            improvement = abs(max_corr) - abs(base_corr)
+            
+            # Determinar líder
+            if optimal_lag > 0:
+                leader = asset1
+                follower = asset2
+            elif optimal_lag < 0:
+                leader = asset2
+                follower = asset1
             else:
-                if mean_corr > -min_correlation:
-                    continue
+                leader = 'simultaneous'
+                follower = 'simultaneous'
             
-            # Calcular Beta
-            beta_ols, alpha_ols = calculate_beta_ols(p1, p2)
-            beta_theil, alpha_theil = calculate_beta_theil_sen(p1, p2)
+            # Score basado en:
+            # - Mejora de correlación con lag
+            # - Consistencia del lag
+            # - Magnitud de la correlación
             
-            # Spread con beta=1 (simple)
-            spread_simple = calculate_log_ratio_spread(p1, p2)
-            
-            # Spread con beta estimado
-            spread_beta = calculate_spread_with_beta(p1, p2, beta_ols)
-            
-            # Tests estadísticos para ambos spreads
-            adf_simple = adf_test(spread_simple)
-            adf_beta = adf_test(spread_beta)
-            
-            hurst_simple = calculate_hurst_exponent(spread_simple.dropna())
-            hurst_beta = calculate_hurst_exponent(spread_beta.dropna())
-            
-            half_life_simple = calculate_half_life(spread_simple)
-            half_life_beta = calculate_half_life(spread_beta)
-            
-            coint_result = test_cointegration(p1, p2)
-            
-            # Rolling correlation stability
-            corr_rolling = calculate_rolling_correlation(df, asset1, asset2, window=lookback)
-            corr_series = pd.Series(corr_rolling['correlation'].values, index=corr_rolling['date'])
-            stability = calculate_correlation_stability(corr_series)
-            
-            if stability['mean_cv'] > max_cv:
-                continue
-            
-            spread_vol = calculate_spread_volatility(spread_beta)
-            
-            # SCORE mejorado
             score = 0
             
-            # Estabilidad de correlación
-            if stability['mean_cv'] < 0.15:
+            # Mejora de correlación
+            if improvement > 0.05:
                 score += 30
-            elif stability['mean_cv'] < 0.25:
+            elif improvement > 0.02:
                 score += 20
-            elif stability['mean_cv'] < 0.35:
-                score += 12
-            else:
-                score += 5
-            
-            # Mean Reversion (usar el mejor entre simple y beta)
-            best_hurst = min(hurst_simple, hurst_beta) if not np.isnan(hurst_beta) else hurst_simple
-            if best_hurst < 0.35:
-                score += 25
-            elif best_hurst < 0.45:
-                score += 18
-            elif best_hurst < 0.5:
+            elif improvement > 0.01:
                 score += 10
             
-            # Estacionariedad (bonus si spread con beta es más estacionario)
-            if adf_beta['stationary']:
-                if adf_beta['pvalue'] < 0.01:
-                    score += 20
-                elif adf_beta['pvalue'] < 0.05:
-                    score += 15
-            elif adf_simple['stationary']:
-                if adf_simple['pvalue'] < 0.01:
-                    score += 15
-                elif adf_simple['pvalue'] < 0.05:
-                    score += 10
+            # Magnitud de correlación
+            if abs(max_corr) > 0.7:
+                score += 30
+            elif abs(max_corr) > 0.5:
+                score += 20
+            elif abs(max_corr) > 0.3:
+                score += 10
             
-            # Cointegración
-            if coint_result['cointegrated']:
-                if coint_result['pvalue'] < 0.01:
-                    score += 15
-                elif coint_result['pvalue'] < 0.05:
-                    score += 10
+            # Lag significativo (no cero)
+            if abs(optimal_lag) > 0 and abs(optimal_lag) <= 5:
+                score += 20  # Lag pequeño y significativo
+            elif abs(optimal_lag) > 5:
+                score += 10  # Lag más grande
             
-            # Beta cercano a 1 (simplicidad)
-            if 0.85 <= abs(beta_ols) <= 1.15:
-                score += 5  # Bonus por simplicidad
-            
-            # Beta estable (OLS y Theil-Sen similares)
-            beta_divergence = abs(beta_ols - beta_theil) if not np.isnan(beta_theil) else 0
-            if beta_divergence < 0.1:
-                score += 5  # Beta estable
-            
-            if spread_vol > spread_beta.std() * 2:
-                score *= 0.8
-            
-            if not np.isnan(half_life_beta) and half_life_beta > 100:
-                score *= 0.9
-            
-            returns1 = np.log(p1 / p1.shift(1)).dropna()
-            returns2 = np.log(p2 / p2.shift(1)).dropna()
-            cond_corr = calculate_conditional_correlation(returns1, returns2)
-            
-            years_data = (common_idx[-1] - common_idx[0]).days / 365.25
+            # Calcular estabilidad del lead-lag
+            if len(returns1) >= 100:
+                lead_lag_rolling = calculate_rolling_lead_lag(returns1, returns2, window=60, max_lag=5)
+                if len(lead_lag_rolling) > 0:
+                    stability = analyze_leadership_stability(lead_lag_rolling)
+                    if stability:
+                        # Bonus por estabilidad
+                        if stability['stability']['change_frequency'] < 20:
+                            score += 15
+                        elif stability['stability']['change_frequency'] < 40:
+                            score += 8
+                else:
+                    stability = None
+            else:
+                stability = None
             
             candidates.append({
                 'asset1': asset1,
                 'asset2': asset2,
                 'score': score,
-                'mean_correlation': mean_corr,
-                'corr_stability_cv': stability['mean_cv'],
-                # Beta info
-                'beta_ols': beta_ols,
-                'beta_theil': beta_theil,
-                'beta_divergence': beta_divergence,
-                'beta_distance_from_1': abs(beta_ols - 1),
-                # Hurst
-                'hurst_simple': hurst_simple,
-                'hurst_beta': hurst_beta,
-                # Half-life
-                'half_life_simple': half_life_simple,
-                'half_life_beta': half_life_beta,
-                # Estacionariedad
-                'adf_pvalue_simple': adf_simple['pvalue'],
-                'adf_pvalue_beta': adf_beta['pvalue'],
-                'stationary_simple': adf_simple['stationary'],
-                'stationary_beta': adf_beta['stationary'],
-                # Cointegración
-                'cointegrated': coint_result['cointegrated'],
-                'coint_pvalue': coint_result['pvalue'],
-                # Volatilidad
-                'spread_volatility': spread_vol,
-                # Correlación condicional
-                'corr_positive_markets': cond_corr['positive_markets'],
-                'corr_negative_markets': cond_corr['negative_markets'],
-                'corr_high_volatility': cond_corr['high_volatility'],
-                # Metadata
-                'years_data': years_data,
-                'total_days': len(common_idx)
+                'base_correlation': base_corr,
+                'optimal_lag': optimal_lag,
+                'max_correlation': max_corr,
+                'improvement': improvement,
+                'leader': leader,
+                'follower': follower,
+                'leader_pct': stability['leadership_distribution'][f'{leader}_pct'] if stability and leader != 'simultaneous' else 0,
+                'change_frequency': stability['stability']['change_frequency'] if stability else np.nan,
+                'avg_streak': stability['stability']['avg_streak_length'] if stability else np.nan,
             })
     
     progress_bar.empty()
@@ -960,461 +652,277 @@ def find_best_pairs(df, correlation_type='positive', min_correlation=0.5,
     
     return pd.DataFrame(candidates).sort_values('score', ascending=False)
 
+
 # ============================================================================
 # FUNCIONES DE VISUALIZACIÓN
 # ============================================================================
 
-def plot_rolling_correlation(corr_df, asset1_name, asset2_name):
-    """Gráfico de correlación móvil"""
+def plot_cross_correlation(cross_corr_df, asset1_name, asset2_name):
+    """Gráfico de correlación cruzada"""
     fig = go.Figure()
     
-    fig.add_trace(go.Scatter(
-        x=corr_df['date'],
-        y=corr_df['correlation'],
-        mode='lines',
-        name=f'{asset1_name} vs {asset2_name}',
-        line=dict(color='#3b82f6', width=2),
-        hovertemplate='%{x}<br>Correlación: %{y:.4f}<extra></extra>'
+    colors = ['#ef4444' if lag < 0 else '#10b981' if lag > 0 else '#3b82f6' 
+              for lag in cross_corr_df['lag']]
+    
+    fig.add_trace(go.Bar(
+        x=cross_corr_df['lag'],
+        y=cross_corr_df['correlation'],
+        marker_color=colors,
+        hovertemplate='Lag: %{x}<br>Correlación: %{y:.4f}<extra></extra>'
     ))
     
-    fig.add_hline(y=0, line_dash="dash", line_color="#666666", 
-                  annotation_text="Neutral", annotation_position="right")
-    fig.add_hline(y=0.5, line_dash="dot", line_color="#10b981", opacity=0.5)
-    fig.add_hline(y=-0.5, line_dash="dot", line_color="#ef4444", opacity=0.5)
+    # Línea en lag = 0
+    fig.add_vline(x=0, line_dash="dash", line_color="#ffffff", opacity=0.5)
     
-    fig.add_hrect(y0=0.5, y1=1, fillcolor="#10b981", opacity=0.1, line_width=0)
-    fig.add_hrect(y0=-1, y1=-0.5, fillcolor="#ef4444", opacity=0.1, line_width=0)
+    # Encontrar máximo
+    max_idx = cross_corr_df['correlation'].abs().idxmax()
+    max_lag = cross_corr_df.loc[max_idx, 'lag']
+    max_corr = cross_corr_df.loc[max_idx, 'correlation']
+    
+    fig.add_annotation(
+        x=max_lag,
+        y=max_corr,
+        text=f"Óptimo: Lag={max_lag}, ρ={max_corr:.3f}",
+        showarrow=True,
+        arrowhead=2,
+        arrowcolor="#f59e0b",
+        font=dict(color="#f59e0b")
+    )
     
     fig.update_layout(
-        title=f'Rolling Correlation: {asset1_name} vs {asset2_name}',
-        xaxis_title='Fecha',
+        title=f'Correlación Cruzada: {asset1_name} vs {asset2_name}<br><sup>Lag > 0: {asset1_name} lidera | Lag < 0: {asset2_name} lidera</sup>',
+        xaxis_title='Lag (días)',
         yaxis_title='Correlación',
-        yaxis=dict(range=[-1, 1]),
         template='plotly_dark',
-        hovermode='x unified',
-        height=400,
-        showlegend=True
-    )
-    
-    return fig
-
-
-def plot_all_correlations(corr_df, asset1_name, asset2_name):
-    """Gráfico comparativo de Pearson, Spearman, Kendall"""
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=corr_df['date'],
-        y=corr_df['pearson'],
-        mode='lines',
-        name='Pearson (lineal)',
-        line=dict(color='#3b82f6', width=2),
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=corr_df['date'],
-        y=corr_df['spearman'],
-        mode='lines',
-        name='Spearman (rank)',
-        line=dict(color='#10b981', width=2),
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=corr_df['date'],
-        y=corr_df['kendall'],
-        mode='lines',
-        name='Kendall (concordancia)',
-        line=dict(color='#f59e0b', width=2),
-    ))
-    
-    fig.add_hline(y=0, line_dash="dash", line_color="#666666")
-    
-    fig.update_layout(
-        title=f'Comparación de Correlaciones: {asset1_name} vs {asset2_name}',
-        xaxis_title='Fecha',
-        yaxis_title='Correlación',
-        yaxis=dict(range=[-1, 1]),
-        template='plotly_dark',
-        hovermode='x unified',
-        height=450,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
-    
-    return fig
-
-
-def plot_rolling_beta(beta_df, asset1_name, asset2_name, method='OLS'):
-    """Gráfico de Beta rolling"""
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=beta_df['date'],
-        y=beta_df['beta'],
-        mode='lines',
-        name=f'Beta ({method})',
-        line=dict(color='#8b5cf6', width=2),
-        hovertemplate='%{x}<br>Beta: %{y:.4f}<extra></extra>'
-    ))
-    
-    # Línea de referencia en beta = 1
-    fig.add_hline(y=1, line_dash="dash", line_color="#ef4444", 
-                  annotation_text="β = 1", annotation_position="right")
-    
-    # Banda de confianza alrededor de 1
-    fig.add_hrect(y0=0.85, y1=1.15, fillcolor="#10b981", opacity=0.1, line_width=0,
-                  annotation_text="Zona β ≈ 1", annotation_position="top left")
-    
-    fig.update_layout(
-        title=f'Rolling Beta ({method}): {asset1_name} vs {asset2_name}',
-        xaxis_title='Fecha',
-        yaxis_title='Beta (Hedge Ratio)',
-        template='plotly_dark',
-        hovermode='x unified',
         height=400,
     )
     
     return fig
 
 
-def plot_beta_comparison(beta_ols_df, beta_theil_df, asset1_name, asset2_name):
-    """Comparación de Beta OLS vs Theil-Sen"""
-    fig = go.Figure()
-    
-    fig.add_trace(go.Scatter(
-        x=beta_ols_df['date'],
-        y=beta_ols_df['beta'],
-        mode='lines',
-        name='Beta OLS',
-        line=dict(color='#3b82f6', width=2),
-    ))
-    
-    fig.add_trace(go.Scatter(
-        x=beta_theil_df['date'],
-        y=beta_theil_df['beta'],
-        mode='lines',
-        name='Beta Theil-Sen',
-        line=dict(color='#f59e0b', width=2),
-    ))
-    
-    fig.add_hline(y=1, line_dash="dash", line_color="#ef4444", opacity=0.5)
-    
-    fig.update_layout(
-        title=f'Comparación Beta OLS vs Theil-Sen: {asset1_name} vs {asset2_name}',
-        xaxis_title='Fecha',
-        yaxis_title='Beta',
-        template='plotly_dark',
-        hovermode='x unified',
-        height=400,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+def plot_rolling_lead_lag(lead_lag_df, asset1_name, asset2_name):
+    """Gráfico de lag óptimo rolling"""
+    fig = make_subplots(
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.1,
+        subplot_titles=('Lag Óptimo (Rolling)', 'Correlación Máxima'),
+        row_heights=[0.6, 0.4]
     )
     
-    return fig
-
-
-def plot_spread_comparison(prices1, prices2, beta, asset1_name, asset2_name):
-    """Comparación de spread con beta=1 vs beta estimado"""
-    spread_simple = calculate_log_ratio_spread(prices1, prices2)
-    spread_beta = calculate_spread_with_beta(prices1, prices2, beta)
+    # Colorear por líder
+    colors = ['#10b981' if l == 'asset1' else '#ef4444' if l == 'asset2' else '#3b82f6' 
+              for l in lead_lag_df['leader']]
     
-    # Normalizar para comparar
-    zscore_simple = (spread_simple - spread_simple.mean()) / spread_simple.std()
-    zscore_beta = (spread_beta - spread_beta.mean()) / spread_beta.std()
-    
-    fig = make_subplots(rows=2, cols=1, 
-                        subplot_titles=('Spread (β=1) vs Spread (β estimado)', 'Z-Score Comparación'),
-                        vertical_spacing=0.12)
-    
-    # Spreads
+    # Lag óptimo
     fig.add_trace(go.Scatter(
-        x=spread_simple.index,
-        y=spread_simple,
-        mode='lines',
-        name='Spread (β=1)',
-        line=dict(color='#3b82f6', width=1.5),
+        x=lead_lag_df['date'],
+        y=lead_lag_df['optimal_lag'],
+        mode='lines+markers',
+        marker=dict(color=colors, size=4),
+        line=dict(color='#8b5cf6', width=1),
+        name='Lag Óptimo',
+        hovertemplate='%{x}<br>Lag: %{y}<extra></extra>'
     ), row=1, col=1)
     
-    fig.add_trace(go.Scatter(
-        x=spread_beta.index,
-        y=spread_beta,
-        mode='lines',
-        name=f'Spread (β={beta:.3f})',
-        line=dict(color='#10b981', width=1.5),
-    ), row=1, col=1)
+    fig.add_hline(y=0, line_dash="dash", line_color="#ffffff", opacity=0.3, row=1, col=1)
     
-    # Z-Scores
+    # Correlación
     fig.add_trace(go.Scatter(
-        x=zscore_simple.index,
-        y=zscore_simple,
+        x=lead_lag_df['date'],
+        y=lead_lag_df['max_correlation'],
         mode='lines',
-        name='Z-Score (β=1)',
-        line=dict(color='#3b82f6', width=1.5),
+        line=dict(color='#3b82f6', width=2),
+        name='Correlación',
+        hovertemplate='%{x}<br>Corr: %{y:.3f}<extra></extra>'
     ), row=2, col=1)
-    
-    fig.add_trace(go.Scatter(
-        x=zscore_beta.index,
-        y=zscore_beta,
-        mode='lines',
-        name=f'Z-Score (β={beta:.3f})',
-        line=dict(color='#10b981', width=1.5),
-    ), row=2, col=1)
-    
-    # Líneas de referencia para Z-Score
-    fig.add_hline(y=2, line_dash="dot", line_color="#f59e0b", opacity=0.5, row=2, col=1)
-    fig.add_hline(y=-2, line_dash="dot", line_color="#f59e0b", opacity=0.5, row=2, col=1)
-    fig.add_hline(y=0, line_dash="dash", line_color="#666666", row=2, col=1)
     
     fig.update_layout(
-        title=f'Comparación de Spreads: {asset1_name} vs {asset2_name}',
+        title=f'Análisis Lead-Lag Rolling: {asset1_name} vs {asset2_name}',
         template='plotly_dark',
-        height=600,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+        height=500,
+        showlegend=False
+    )
+    
+    fig.update_yaxes(title_text="Lag (días)", row=1, col=1)
+    fig.update_yaxes(title_text="Correlación", row=2, col=1)
+    
+    return fig
+
+
+def plot_leadership_distribution(stability_data, asset1_name, asset2_name):
+    """Gráfico de distribución de liderazgo"""
+    fig = go.Figure()
+    
+    labels = [asset1_name, asset2_name, 'Simultáneo']
+    values = [
+        stability_data['leadership_distribution']['asset1_pct'],
+        stability_data['leadership_distribution']['asset2_pct'],
+        stability_data['leadership_distribution']['simultaneous_pct']
+    ]
+    colors = ['#10b981', '#ef4444', '#3b82f6']
+    
+    fig.add_trace(go.Pie(
+        labels=labels,
+        values=values,
+        marker_colors=colors,
+        hole=0.4,
+        textinfo='label+percent',
+        textposition='outside'
+    ))
+    
+    fig.update_layout(
+        title='Distribución de Liderazgo',
+        template='plotly_dark',
+        height=400,
     )
     
     return fig
 
 
-def plot_beta_distribution(beta_df):
-    """Histograma de distribución del beta"""
+def plot_lag_histogram(lead_lag_df):
+    """Histograma de distribución de lags"""
     fig = go.Figure()
     
     fig.add_trace(go.Histogram(
-        x=beta_df['beta'].dropna(),
-        nbinsx=50,
-        name='Distribución Beta',
+        x=lead_lag_df['optimal_lag'],
+        nbinsx=21,
         marker_color='#8b5cf6',
         opacity=0.7
     ))
     
-    # Línea vertical en beta = 1
-    mean_beta = beta_df['beta'].mean()
-    fig.add_vline(x=1, line_dash="dash", line_color="#ef4444", 
-                  annotation_text="β = 1", annotation_position="top")
-    fig.add_vline(x=mean_beta, line_dash="solid", line_color="#10b981", 
-                  annotation_text=f"Media: {mean_beta:.3f}", annotation_position="top")
+    mean_lag = lead_lag_df['optimal_lag'].mean()
+    fig.add_vline(x=mean_lag, line_dash="solid", line_color="#f59e0b",
+                  annotation_text=f"Media: {mean_lag:.1f}", annotation_position="top")
+    fig.add_vline(x=0, line_dash="dash", line_color="#ffffff", opacity=0.5)
     
     fig.update_layout(
-        title='Distribución Histórica del Beta',
-        xaxis_title='Beta',
+        title='Distribución del Lag Óptimo',
+        xaxis_title='Lag (días)',
         yaxis_title='Frecuencia',
         template='plotly_dark',
+        height=350,
+    )
+    
+    return fig
+
+
+def plot_regime_lead_lag(regime_results, asset1_name, asset2_name):
+    """Gráfico de lead-lag por régimen"""
+    fig = go.Figure()
+    
+    regimes = []
+    lags = []
+    correlations = []
+    colors = []
+    
+    regime_labels = {
+        'high_volatility': 'Alta Volatilidad',
+        'low_volatility': 'Baja Volatilidad',
+        'bull_market': 'Mercado Alcista',
+        'bear_market': 'Mercado Bajista'
+    }
+    
+    for regime, data in regime_results.items():
+        if data is not None:
+            regimes.append(regime_labels.get(regime, regime))
+            lags.append(data['optimal_lag'])
+            correlations.append(data['max_correlation'])
+            
+            if data['leader'] == 'asset1':
+                colors.append('#10b981')
+            elif data['leader'] == 'asset2':
+                colors.append('#ef4444')
+            else:
+                colors.append('#3b82f6')
+    
+    fig.add_trace(go.Bar(
+        x=regimes,
+        y=lags,
+        marker_color=colors,
+        text=[f"ρ={c:.2f}" for c in correlations],
+        textposition='outside',
+        hovertemplate='%{x}<br>Lag: %{y}<br>Corr: %{text}<extra></extra>'
+    ))
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="#ffffff", opacity=0.3)
+    
+    fig.update_layout(
+        title=f'Lag Óptimo por Régimen de Mercado<br><sup>Verde: {asset1_name} lidera | Rojo: {asset2_name} lidera</sup>',
+        xaxis_title='Régimen',
+        yaxis_title='Lag Óptimo (días)',
+        template='plotly_dark',
         height=400,
     )
     
     return fig
 
 
-def plot_price_comparison(df, asset1, asset2, asset1_name, asset2_name):
-    """Gráfico comparativo de precios"""
-    fig = make_subplots(specs=[[{"secondary_y": True}]])
-    
-    norm1 = (df[asset1] / df[asset1].iloc[0]) * 100
-    norm2 = (df[asset2] / df[asset2].iloc[0]) * 100
-    
-    fig.add_trace(
-        go.Scatter(x=df.index, y=norm1, name=asset1_name, 
-                   line=dict(color='#10b981', width=2)),
-        secondary_y=False
-    )
-    
-    fig.add_trace(
-        go.Scatter(x=df.index, y=norm2, name=asset2_name, 
-                   line=dict(color='#3b82f6', width=2)),
-        secondary_y=False
-    )
-    
-    fig.update_layout(
-        title='Comparación de Precios (Normalizado base 100)',
-        template='plotly_dark',
-        hovermode='x unified',
-        height=400
-    )
-    
-    fig.update_yaxes(title_text="Índice (Base 100)", secondary_y=False)
-    
-    return fig
-
-
-def plot_conditional_correlation(cond_corr):
-    """Gráfico de correlación condicional"""
-    fig = go.Figure(data=[
-        go.Bar(
-            x=['Normal', 'Mercados Alcistas', 'Mercados Bajistas', 'Alta Volatilidad'],
-            y=[cond_corr['normal'], cond_corr['positive_markets'], 
-               cond_corr['negative_markets'], cond_corr['high_volatility']],
-            marker_color=['#3b82f6', '#10b981', '#ef4444', '#f59e0b']
-        )
-    ])
-    
-    fig.update_layout(
-        title='Correlación en Diferentes Condiciones de Mercado',
-        yaxis_title='Correlación',
-        template='plotly_dark',
-        height=400
-    )
-    
-    return fig
-
-
-def plot_multiple_rolling_correlations(df, pairs_list, window=10):
-    """Múltiples gráficos de correlación"""
+def plot_returns_with_lag(returns1, returns2, optimal_lag, asset1_name, asset2_name):
+    """Visualiza retornos con el lag aplicado"""
     fig = make_subplots(
-        rows=(len(pairs_list) + 1) // 2, 
-        cols=2,
-        subplot_titles=[f"{ASSETS[p['asset1']]['label']} vs {ASSETS[p['asset2']]['label']}" 
-                       for p in pairs_list],
-        vertical_spacing=0.08,
-        horizontal_spacing=0.1
-    )
-    
-    for idx, pair in enumerate(pairs_list):
-        row = (idx // 2) + 1
-        col = (idx % 2) + 1
-        
-        corr_df = calculate_rolling_correlation(df, pair['asset1'], pair['asset2'], window=window, step=1)
-        
-        fig.add_trace(
-            go.Scatter(
-                x=corr_df['date'],
-                y=corr_df['correlation'],
-                mode='lines',
-                name=f"{ASSETS[pair['asset1']]['label'][:10]} vs {ASSETS[pair['asset2']]['label'][:10]}",
-                line=dict(width=1.5),
-                showlegend=False
-            ),
-            row=row, col=col
+        rows=2, cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.1,
+        subplot_titles=(
+            'Retornos Originales (Sin Lag)',
+            f'Retornos con Lag={optimal_lag} Aplicado'
         )
-        
-        fig.add_hline(y=0, line_dash="dash", line_color="#666666", opacity=0.5, row=row, col=col)
-        fig.add_hline(y=0.5, line_dash="dot", line_color="#10b981", opacity=0.3, row=row, col=col)
-        fig.add_hline(y=-0.5, line_dash="dot", line_color="#ef4444", opacity=0.3, row=row, col=col)
-        
-        fig.update_yaxes(range=[-1, 1], row=row, col=col)
+    )
     
-    fig.update_layout(
-        height=300 * ((len(pairs_list) + 1) // 2),
-        template='plotly_dark',
+    # Original
+    fig.add_trace(go.Scatter(
+        x=returns1.index,
+        y=returns1,
+        name=asset1_name,
+        line=dict(color='#10b981', width=1),
+        opacity=0.7
+    ), row=1, col=1)
+    
+    fig.add_trace(go.Scatter(
+        x=returns2.index,
+        y=returns2,
+        name=asset2_name,
+        line=dict(color='#ef4444', width=1),
+        opacity=0.7
+    ), row=1, col=1)
+    
+    # Con lag
+    if optimal_lag > 0:
+        r1_lagged = returns1.iloc[:-optimal_lag]
+        r2_lagged = returns2.iloc[optimal_lag:]
+        r2_lagged.index = r1_lagged.index
+    elif optimal_lag < 0:
+        r1_lagged = returns1.iloc[-optimal_lag:]
+        r2_lagged = returns2.iloc[:optimal_lag]
+        r1_lagged.index = r2_lagged.index
+    else:
+        r1_lagged = returns1
+        r2_lagged = returns2
+    
+    fig.add_trace(go.Scatter(
+        x=r1_lagged.index,
+        y=r1_lagged,
+        name=f'{asset1_name} (original)',
+        line=dict(color='#10b981', width=1),
+        opacity=0.7,
         showlegend=False
-    )
+    ), row=2, col=1)
     
-    return fig
-
-
-def plot_seasonality_monthly(monthly_data, title, ylabel):
-    """Gráfico de patrones mensuales"""
-    months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
-              'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-    
-    fig = go.Figure()
-    
-    if isinstance(monthly_data, pd.DataFrame) and 'mean' in monthly_data.columns:
-        fig.add_trace(go.Scatter(
-            x=months,
-            y=monthly_data['mean'],
-            mode='lines+markers',
-            name='Media',
-            line=dict(color='#3b82f6', width=3),
-            marker=dict(size=10)
-        ))
-        
-        if 'std' in monthly_data.columns:
-            fig.add_trace(go.Scatter(
-                x=months + months[::-1],
-                y=(monthly_data['mean'] + monthly_data['std']).tolist() + 
-                  (monthly_data['mean'] - monthly_data['std']).tolist()[::-1],
-                fill='toself',
-                fillcolor='rgba(59, 130, 246, 0.2)',
-                line=dict(color='rgba(255,255,255,0)'),
-                showlegend=False,
-                hoverinfo='skip'
-            ))
-    else:
-        fig.add_trace(go.Bar(
-            x=months,
-            y=monthly_data.values,
-            marker_color='#3b82f6'
-        ))
+    fig.add_trace(go.Scatter(
+        x=r1_lagged.index,
+        y=r2_lagged.values,
+        name=f'{asset2_name} (shifted)',
+        line=dict(color='#ef4444', width=1),
+        opacity=0.7,
+        showlegend=False
+    ), row=2, col=1)
     
     fig.update_layout(
-        title=title,
-        xaxis_title='Mes',
-        yaxis_title=ylabel,
+        title=f'Comparación de Retornos: Original vs Con Lag',
         template='plotly_dark',
-        height=400,
-        hovermode='x'
-    )
-    
-    return fig
-
-
-def plot_seasonality_quarterly(quarterly_data, title, ylabel):
-    """Gráfico de patrones trimestrales"""
-    quarters = ['Q1', 'Q2', 'Q3', 'Q4']
-    
-    fig = go.Figure()
-    
-    if isinstance(quarterly_data, pd.DataFrame) and 'mean' in quarterly_data.columns:
-        fig.add_trace(go.Bar(
-            x=quarters,
-            y=quarterly_data['mean'],
-            name='Media',
-            marker_color=['#10b981', '#3b82f6', '#f59e0b', '#ef4444']
-        ))
-    else:
-        fig.add_trace(go.Bar(
-            x=quarters,
-            y=quarterly_data.values,
-            marker_color=['#10b981', '#3b82f6', '#f59e0b', '#ef4444']
-        ))
-    
-    fig.update_layout(
-        title=title,
-        xaxis_title='Trimestre',
-        yaxis_title=ylabel,
-        template='plotly_dark',
-        height=400
-    )
-    
-    return fig
-
-
-def plot_seasonality_yearly(yearly_data, title, ylabel):
-    """Gráfico de evolución anual"""
-    fig = go.Figure()
-    
-    if isinstance(yearly_data, pd.DataFrame) and 'mean' in yearly_data.columns:
-        fig.add_trace(go.Scatter(
-            x=yearly_data.index,
-            y=yearly_data['mean'],
-            mode='lines+markers',
-            name='Media',
-            line=dict(color='#3b82f6', width=3),
-            marker=dict(size=10)
-        ))
-        
-        if 'std' in yearly_data.columns:
-            fig.add_trace(go.Scatter(
-                x=yearly_data.index.tolist() + yearly_data.index.tolist()[::-1],
-                y=(yearly_data['mean'] + yearly_data['std']).tolist() + 
-                  (yearly_data['mean'] - yearly_data['std']).tolist()[::-1],
-                fill='toself',
-                fillcolor='rgba(59, 130, 246, 0.2)',
-                line=dict(color='rgba(255,255,255,0)'),
-                showlegend=False,
-                hoverinfo='skip'
-            ))
-    else:
-        fig.add_trace(go.Bar(
-            x=yearly_data.index,
-            y=yearly_data.values,
-            marker_color='#3b82f6'
-        ))
-    
-    fig.update_layout(
-        title=title,
-        xaxis_title='Año',
-        yaxis_title=ylabel,
-        template='plotly_dark',
-        height=400
+        height=500,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02)
     )
     
     return fig
@@ -1424,9 +932,9 @@ def plot_seasonality_yearly(yearly_data, title, ylabel):
 # INTERFAZ PRINCIPAL
 # ============================================================================
 
-st.title("📊 Pairs Trading - Beta & Correlation Analysis")
-st.markdown("**Análisis de Beta, correlaciones múltiples y estacionalidad para pares de activos**")
-st.info("📊 **10 años de historia** | 🔢 **Cálculo de Beta (OLS/Theil-Sen)** | 📈 **Pearson/Spearman/Kendall**")
+st.title("🔄 Lead-Lag Analysis - Pairs Trading")
+st.markdown("**Detecta qué activo lidera y cuál sigue usando correlación cruzada**")
+st.info("📊 **Cross-Correlation** | 🔄 **Rolling Lead-Lag** | 📈 **Análisis por Régimen**")
 
 # ============================================================================
 # SIDEBAR - GESTIÓN DE DATOS
@@ -1440,36 +948,6 @@ if cache_info:
     st.sidebar.success("✅ Datos en cache")
     st.sidebar.metric("Última actualización", cache_info['last_update'].strftime('%Y-%m-%d %H:%M'))
     st.sidebar.metric("Total activos", cache_info['total_assets'])
-    st.sidebar.metric("Período histórico", f"{cache_info['date_range']['start']} → {cache_info['date_range']['end']}")
-    
-    days_old = (datetime.now() - cache_info['last_update']).days
-    if days_old > 0:
-        st.sidebar.warning(f"⏰ Datos de hace {days_old} días")
-    
-    col1, col2 = st.sidebar.columns(2)
-    
-    with col1:
-        if st.button("🔄 Actualizar", key='btn_update_data'):
-            with st.spinner("Actualizando datos..."):
-                existing_data, existing_metadata = load_data_from_cache()
-                
-                if existing_data and existing_metadata:
-                    updated_data, updated_metadata = update_existing_data(
-                        existing_data, existing_metadata, delay=2
-                    )
-                    
-                    if save_data_to_cache(updated_data, updated_metadata):
-                        st.success(f"✅ Actualizados {updated_metadata.get('updated_count', 0)} activos")
-                        st.rerun()
-    
-    with col2:
-        if st.button("🗑️ Borrar", key='btn_delete_cache'):
-            if CACHE_FILE.exists():
-                CACHE_FILE.unlink()
-            if METADATA_FILE.exists():
-                METADATA_FILE.unlink()
-            st.success("Cache borrado")
-            st.rerun()
     
     if 'all_asset_data' not in st.session_state:
         with st.spinner("Cargando datos desde cache..."):
@@ -1477,12 +955,10 @@ if cache_info:
             if data and metadata:
                 st.session_state.all_asset_data = data
                 st.session_state.metadata = metadata
-                st.success("✅ Datos cargados desde cache")
-    
 else:
     st.sidebar.warning("⚠️ No hay datos descargados")
     
-    if st.sidebar.button("📥 Descargar Datos (10 años)", type="primary", key='btn_download_assets'):
+    if st.sidebar.button("📥 Descargar Datos", type="primary"):
         with st.spinner(f"Descargando {len(ASSETS)} activos..."):
             all_data, metadata = download_all_assets(delay=3, start_date='2015-01-01')
         
@@ -1491,31 +967,28 @@ else:
                 st.success(f"✅ Descargados {len(all_data)} activos")
                 st.session_state.all_asset_data = all_data
                 st.session_state.metadata = metadata
-                
-                if len(metadata['failed_assets']) > 0:
-                    st.warning(f"⚠️ {len(metadata['failed_assets'])} activos fallaron")
-                
                 st.rerun()
 
 if 'all_asset_data' not in st.session_state:
-    st.info(f"""
-    ### 👋 Bienvenido al Análisis de Beta y Correlaciones
+    st.info("""
+    ### 👋 Lead-Lag Analysis
     
-    **Activos disponibles ({len(ASSETS)}):**
-    - 📊 {len([a for a in ASSETS.values() if a['category'] == 'Indices'])} Índices globales
-    - 💱 {len([a for a in ASSETS.values() if a['category'] == 'Forex'])} Pares de divisas (incluye DXY)
-    - 🏆 {len([a for a in ASSETS.values() if a['category'] == 'Commodities'])} Commodities
-    - ₿ {len([a for a in ASSETS.values() if a['category'] == 'Crypto'])} Criptomonedas
+    **¿Qué es Lead-Lag?**
     
-    **Nuevas Características:**
-    - 🔢 **Cálculo de Beta** (OLS y Theil-Sen)
-    - 📊 **Spread con Beta**: ln(P1) - β·ln(P2)
-    - 📈 **Múltiples Correlaciones**: Pearson, Spearman, Kendall
-    - 🎯 **Análisis de Estabilidad del Beta**
-    - 📅 **10 años de datos históricos**
+    En pairs trading, uno de los activos puede **liderar** (moverse primero) mientras el otro **sigue** 
+    (reacciona después). Detectar esto permite:
     
-    **Para comenzar:**
-    1. Presiona "📥 Descargar Datos (10 años)"
+    - 🎯 Predecir movimientos del activo rezagado
+    - ⚡ Mejores puntos de entrada
+    - 📊 Entender la dinámica del par
+    
+    **Herramientas disponibles:**
+    - 📈 Correlación cruzada con lags
+    - 🔄 Detección rolling de liderazgo
+    - 📊 Análisis por régimen (volatilidad, tendencia)
+    - 🎯 Búsqueda de pares con lead-lag significativo
+    
+    👉 Descarga los datos para comenzar
     """)
     st.stop()
 
@@ -1524,13 +997,12 @@ if 'all_asset_data' not in st.session_state:
 # ============================================================================
 
 st.sidebar.markdown("---")
-st.sidebar.header("⚙️ Parámetros de Análisis")
+st.sidebar.header("⚙️ Parámetros")
 
-min_correlation = st.sidebar.slider("Correlación Mínima", 0.3, 0.9, 0.5, 0.05)
-max_cv = st.sidebar.slider("Máx. CV (estabilidad)", 0.2, 0.8, 0.4, 0.05)
-rolling_window = st.sidebar.slider("Window Rolling Correlation", 10, 200, 30, 5)
-beta_window = st.sidebar.slider("Window Beta Rolling", 50, 300, 100, 10)
-lookback_analysis = st.sidebar.slider("Lookback para Análisis", 50, 200, 100, 10)
+max_lag = st.sidebar.slider("Lag Máximo (días)", 5, 30, 15, 1)
+rolling_window = st.sidebar.slider("Window Rolling", 30, 120, 60, 10)
+min_correlation = st.sidebar.slider("Correlación Mínima (búsqueda)", 0.2, 0.7, 0.4, 0.05)
+lookback_days = st.sidebar.slider("Lookback (días)", 126, 504, 252, 21)
 
 # Crear DataFrame
 df_all_prices = merge_asset_data(st.session_state.all_asset_data)
@@ -1539,21 +1011,16 @@ if df_all_prices.empty:
     st.error("No hay datos suficientes")
     st.stop()
 
-years_available = (df_all_prices.index[-1] - df_all_prices.index[0]).days / 365.25
-
-st.success(f"✅ {len(df_all_prices)} días ({years_available:.1f} años) | {df_all_prices.index[0].date()} → {df_all_prices.index[-1].date()}")
-st.info(f"📊 {len(df_all_prices.columns)} activos disponibles | 🔢 Beta Analysis | 📈 Multi-Correlation")
+st.success(f"✅ {len(df_all_prices)} días | {len(df_all_prices.columns)} activos")
 
 # ============================================================================
 # TABS
 # ============================================================================
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
-    "🔍 Búsqueda de Pares",
+tab1, tab2, tab3 = st.tabs([
+    "🔍 Búsqueda Lead-Lag",
     "📊 Análisis Individual",
-    "🔢 Análisis de Beta",
-    "📈 Comparación de Pares",
-    "📅 Estacionalidad"
+    "📈 Análisis por Régimen"
 ])
 
 # ============================================================================
@@ -1561,183 +1028,115 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 # ============================================================================
 
 with tab1:
-    st.header("🔍 Búsqueda de Mejores Pares")
+    st.header("🔍 Búsqueda de Pares con Lead-Lag Significativo")
+    
     st.info("""
-    **Criterios Estadísticos (Mejorados con Beta):**
-    - ✅ Estabilidad de Correlación (30 pts)
-    - ✅ Mean Reversion - Hurst < 0.5 (25 pts)
-    - ✅ Estacionariedad - ADF test (20 pts) - **Bonus si spread con β es más estacionario**
-    - ✅ Cointegración (15 pts)
-    - ✅ **Beta cercano a 1** (5 pts) - Simplicidad
-    - ✅ **Beta estable** (5 pts) - OLS ≈ Theil-Sen
+    **Criterios de Score:**
+    - 📈 Mejora de correlación con lag (hasta 30 pts)
+    - 🎯 Magnitud de correlación (hasta 30 pts)
+    - ⏱️ Lag significativo (hasta 20 pts)
+    - 🔒 Estabilidad del liderazgo (hasta 15 pts)
     """)
     
-    if st.button("🚀 Buscar Pares", type="primary"):
-        
-        st.markdown("### 📈 Correlación POSITIVA...")
-        with st.spinner("Analizando con cálculo de Beta..."):
-            positive_pairs = find_best_pairs(
+    if st.button("🚀 Buscar Pares con Lead-Lag", type="primary"):
+        with st.spinner("Analizando relaciones lead-lag..."):
+            lead_lag_pairs = find_pairs_with_lead_lag(
                 df_all_prices,
-                correlation_type='positive',
                 min_correlation=min_correlation,
-                max_cv=max_cv,
-                lookback=lookback_analysis,
-                include_beta=True
+                max_lag=max_lag,
+                lookback=lookback_days
             )
         
-        st.markdown("### 📉 Correlación NEGATIVA...")
-        with st.spinner("Analizando con cálculo de Beta..."):
-            negative_pairs = find_best_pairs(
-                df_all_prices,
-                correlation_type='negative',
-                min_correlation=min_correlation,
-                max_cv=max_cv,
-                lookback=lookback_analysis,
-                include_beta=True
-            )
-        
-        st.session_state.positive_pairs = positive_pairs
-        st.session_state.negative_pairs = negative_pairs
+        st.session_state.lead_lag_pairs = lead_lag_pairs
         st.success("✅ Búsqueda completada!")
     
-    if 'positive_pairs' in st.session_state and 'negative_pairs' in st.session_state:
+    if 'lead_lag_pairs' in st.session_state and len(st.session_state.lead_lag_pairs) > 0:
         
-        col1, col2 = st.columns(2)
+        st.markdown("### 🏆 Top Pares con Lead-Lag")
         
-        with col1:
-            st.markdown("### 📈 Top 20 - Correlación POSITIVA")
-            
-            if len(st.session_state.positive_pairs) > 0:
-                display_pos = st.session_state.positive_pairs.head(20).copy()
-                display_pos['Activo 1'] = display_pos['asset1'].apply(lambda x: ASSETS[x]['label'])
-                display_pos['Activo 2'] = display_pos['asset2'].apply(lambda x: ASSETS[x]['label'])
-                display_pos['✓ Estacionario'] = display_pos['stationary_beta'].apply(lambda x: '✅' if x else '❌')
-                display_pos['✓ Cointegrado'] = display_pos['cointegrated'].apply(lambda x: '✅' if x else '❌')
-                
-                table_pos = display_pos[['Activo 1', 'Activo 2', 'score', 'mean_correlation', 
-                                         'beta_ols', 'beta_theil', 'corr_stability_cv', 
-                                         'hurst_beta', 'half_life_beta', 'years_data',
-                                         '✓ Estacionario', '✓ Cointegrado']].rename(columns={
-                    'score': 'Score',
-                    'mean_correlation': 'Corr',
-                    'beta_ols': 'β OLS',
-                    'beta_theil': 'β Theil',
-                    'corr_stability_cv': 'CV',
-                    'hurst_beta': 'Hurst',
-                    'half_life_beta': 'HL',
-                    'years_data': 'Años'
-                })
-                
-                st.dataframe(
-                    table_pos.style.format({
-                        'Score': '{:.1f}',
-                        'Corr': '{:.3f}',
-                        'β OLS': '{:.3f}',
-                        'β Theil': '{:.3f}',
-                        'CV': '{:.3f}',
-                        'Hurst': '{:.3f}',
-                        'HL': '{:.1f}',
-                        'Años': '{:.1f}'
-                    }),
-                    height=600
-                )
-                
-                st.metric("Total pares", len(st.session_state.positive_pairs))
-                
-                pair_options_pos = [f"{row['Activo 1']} / {row['Activo 2']}" 
-                                   for _, row in display_pos.iterrows()]
-                
-                selected_pos_pair = st.selectbox(
-                    "Seleccionar para análisis",
-                    options=pair_options_pos,
-                    key='select_pos_pair'
-                )
-                
-                if st.button("📊 Analizar", key='btn_analyze_pos'):
-                    idx = pair_options_pos.index(selected_pos_pair)
-                    selected_row = display_pos.iloc[idx]
-                    st.session_state.selected_asset1 = selected_row['asset1']
-                    st.session_state.selected_asset2 = selected_row['asset2']
-                    st.session_state.run_analysis = True
-                    st.success(f"✅ {selected_pos_pair}")
-                    st.info("👉 Ve a 'Análisis Individual' o 'Análisis de Beta'")
-            else:
-                st.warning("No se encontraron pares")
+        display_df = st.session_state.lead_lag_pairs.head(30).copy()
+        display_df['Líder'] = display_df['leader'].apply(
+            lambda x: ASSETS[x]['label'] if x in ASSETS else x
+        )
+        display_df['Seguidor'] = display_df['follower'].apply(
+            lambda x: ASSETS[x]['label'] if x in ASSETS else x
+        )
+        display_df['Activo 1'] = display_df['asset1'].apply(lambda x: ASSETS[x]['label'])
+        display_df['Activo 2'] = display_df['asset2'].apply(lambda x: ASSETS[x]['label'])
         
-        with col2:
-            st.markdown("### 📉 Top 20 - Correlación NEGATIVA")
-            
-            if len(st.session_state.negative_pairs) > 0:
-                display_neg = st.session_state.negative_pairs.head(20).copy()
-                display_neg['Activo 1'] = display_neg['asset1'].apply(lambda x: ASSETS[x]['label'])
-                display_neg['Activo 2'] = display_neg['asset2'].apply(lambda x: ASSETS[x]['label'])
-                display_neg['✓ Estacionario'] = display_neg['stationary_beta'].apply(lambda x: '✅' if x else '❌')
-                display_neg['✓ Cointegrado'] = display_neg['cointegrated'].apply(lambda x: '✅' if x else '❌')
-                
-                table_neg = display_neg[['Activo 1', 'Activo 2', 'score', 'mean_correlation', 
-                                         'beta_ols', 'beta_theil', 'corr_stability_cv', 
-                                         'hurst_beta', 'half_life_beta', 'years_data',
-                                         '✓ Estacionario', '✓ Cointegrado']].rename(columns={
-                    'score': 'Score',
-                    'mean_correlation': 'Corr',
-                    'beta_ols': 'β OLS',
-                    'beta_theil': 'β Theil',
-                    'corr_stability_cv': 'CV',
-                    'hurst_beta': 'Hurst',
-                    'half_life_beta': 'HL',
-                    'years_data': 'Años'
-                })
-                
-                st.dataframe(
-                    table_neg.style.format({
-                        'Score': '{:.1f}',
-                        'Corr': '{:.3f}',
-                        'β OLS': '{:.3f}',
-                        'β Theil': '{:.3f}',
-                        'CV': '{:.3f}',
-                        'Hurst': '{:.3f}',
-                        'HL': '{:.1f}',
-                        'Años': '{:.1f}'
-                    }),
-                    height=600
-                )
-                
-                st.metric("Total pares", len(st.session_state.negative_pairs))
-                
-                pair_options_neg = [f"{row['Activo 1']} / {row['Activo 2']}" 
-                                   for _, row in display_neg.iterrows()]
-                
-                selected_neg_pair = st.selectbox(
-                    "Seleccionar para análisis",
-                    options=pair_options_neg,
-                    key='select_neg_pair'
-                )
-                
-                if st.button("📊 Analizar", key='btn_analyze_neg'):
-                    idx = pair_options_neg.index(selected_neg_pair)
-                    selected_row = display_neg.iloc[idx]
-                    st.session_state.selected_asset1 = selected_row['asset1']
-                    st.session_state.selected_asset2 = selected_row['asset2']
-                    st.session_state.run_analysis = True
-                    st.success(f"✅ {selected_neg_pair}")
-                    st.info("👉 Ve a 'Análisis Individual' o 'Análisis de Beta'")
-            else:
-                st.warning("No se encontraron pares")
+        # Indicador de dirección
+        display_df['Dirección'] = display_df['optimal_lag'].apply(
+            lambda x: '→' if x > 0 else ('←' if x < 0 else '↔')
+        )
+        
+        table = display_df[[
+            'Activo 1', 'Dirección', 'Activo 2', 'score', 
+            'optimal_lag', 'base_correlation', 'max_correlation', 
+            'improvement', 'leader_pct', 'change_frequency'
+        ]].rename(columns={
+            'score': 'Score',
+            'optimal_lag': 'Lag',
+            'base_correlation': 'Corr Base',
+            'max_correlation': 'Corr Max',
+            'improvement': 'Mejora',
+            'leader_pct': '% Líder',
+            'change_frequency': '% Cambios'
+        })
+        
+        st.dataframe(
+            table.style.format({
+                'Score': '{:.1f}',
+                'Lag': '{:d}',
+                'Corr Base': '{:.3f}',
+                'Corr Max': '{:.3f}',
+                'Mejora': '{:.4f}',
+                '% Líder': '{:.1f}',
+                '% Cambios': '{:.1f}'
+            }).background_gradient(subset=['Score'], cmap='Greens'),
+            height=600,
+            use_container_width=True
+        )
+        
+        st.markdown("""
+        **Interpretación:**
+        - **→**: Activo 1 lidera (lag positivo)
+        - **←**: Activo 2 lidera (lag negativo)
+        - **↔**: Simultáneo (lag = 0)
+        - **Mejora**: Ganancia de correlación al aplicar el lag óptimo
+        """)
+        
+        # Selección para análisis
+        st.markdown("---")
+        st.markdown("### 🔬 Seleccionar para Análisis Detallado")
+        
+        pair_options = [f"{row['Activo 1']} {row['Dirección']} {row['Activo 2']} (Lag={row['Lag']})" 
+                       for _, row in display_df.head(20).iterrows()]
+        
+        selected_pair = st.selectbox("Seleccionar par", options=pair_options)
+        
+        if st.button("📊 Analizar Este Par"):
+            idx = pair_options.index(selected_pair)
+            selected_row = display_df.iloc[idx]
+            st.session_state.selected_lead_lag_asset1 = selected_row['asset1']
+            st.session_state.selected_lead_lag_asset2 = selected_row['asset2']
+            st.info("👉 Ve a 'Análisis Individual' o 'Análisis por Régimen'")
+    
+    else:
+        if 'lead_lag_pairs' in st.session_state:
+            st.warning("No se encontraron pares con las condiciones especificadas")
 
 # ============================================================================
 # TAB 2: ANÁLISIS INDIVIDUAL
 # ============================================================================
 
 with tab2:
-    st.header("📊 Análisis Individual de Par")
+    st.header("📊 Análisis Individual de Lead-Lag")
     
     available_assets = list(st.session_state.all_asset_data.keys())
     
-    default_asset1 = st.session_state.get('selected_asset1', available_assets[0])
-    default_asset2 = st.session_state.get('selected_asset2', available_assets[1] if len(available_assets) > 1 else available_assets[0])
-    
-    if default_asset2 == default_asset1 and len(available_assets) > 1:
-        default_asset2 = available_assets[1]
+    default_asset1 = st.session_state.get('selected_lead_lag_asset1', available_assets[0])
+    default_asset2 = st.session_state.get('selected_lead_lag_asset2', 
+                                          available_assets[1] if len(available_assets) > 1 else available_assets[0])
     
     col1, col2 = st.columns(2)
     
@@ -1747,7 +1146,7 @@ with tab2:
             options=available_assets,
             index=available_assets.index(default_asset1) if default_asset1 in available_assets else 0,
             format_func=lambda x: ASSETS[x]['label'],
-            key='detail_asset1'
+            key='ll_asset1'
         )
     
     with col2:
@@ -1757,676 +1156,395 @@ with tab2:
             options=asset2_options,
             index=asset2_options.index(default_asset2) if default_asset2 in asset2_options else 0,
             format_func=lambda x: ASSETS[x]['label'],
-            key='detail_asset2'
+            key='ll_asset2'
         )
     
-    if st.button("🔄 Analizar", type="primary", key='btn_analyze_individual'):
-        st.session_state.run_analysis = True
-    
-    if st.session_state.get('run_analysis', False):
+    if st.button("🔄 Analizar Lead-Lag", type="primary", key='btn_analyze_ll'):
         
-        prices1 = df_all_prices[asset1]
-        prices2 = df_all_prices[asset2]
+        prices1 = df_all_prices[asset1].dropna()
+        prices2 = df_all_prices[asset2].dropna()
         
-        years_data = (prices1.index[-1] - prices1.index[0]).days / 365.25
+        common_idx = prices1.index.intersection(prices2.index)
+        prices1 = prices1.loc[common_idx]
+        prices2 = prices2.loc[common_idx]
         
-        st.markdown("### 📅 Período")
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Inicio", prices1.index[0].strftime('%Y-%m-%d'))
-        col2.metric("Fin", prices1.index[-1].strftime('%Y-%m-%d'))
-        col3.metric("Años", f"{years_data:.1f}")
+        returns1 = np.log(prices1 / prices1.shift(1)).dropna()
+        returns2 = np.log(prices2 / prices2.shift(1)).dropna()
         
-        # Múltiples Correlaciones
-        st.markdown("### 📈 Comparación de Correlaciones (Pearson vs Spearman vs Kendall)")
+        common_idx_returns = returns1.index.intersection(returns2.index)
+        returns1 = returns1.loc[common_idx_returns]
+        returns2 = returns2.loc[common_idx_returns]
         
-        all_corr_df = calculate_all_correlations(prices1, prices2, window=rolling_window)
+        asset1_name = ASSETS[asset1]['label']
+        asset2_name = ASSETS[asset2]['label']
+        
+        # 1. Cross-Correlation Estática
+        st.markdown("### 📊 Correlación Cruzada")
+        
+        cross_corr = calculate_cross_correlation(returns1, returns2, max_lag)
         st.plotly_chart(
-            plot_all_correlations(all_corr_df, ASSETS[asset1]['label'], ASSETS[asset2]['label']),
-            use_container_width=True
-        )
-        
-        # Análisis de divergencia
-        divergence = analyze_correlation_divergence(all_corr_df)
-        if divergence:
-            col1, col2, col3, col4 = st.columns(4)
-            col1.metric("Pearson (media)", f"{divergence['pearson_mean']:.3f}")
-            col2.metric("Spearman (media)", f"{divergence['spearman_mean']:.3f}")
-            col3.metric("Kendall (media)", f"{divergence['kendall_mean']:.3f}")
-            col4.metric("Recomendación", divergence['recommendation'],
-                       delta="Lineal ✅" if divergence['is_linear'] else "No Lineal ⚠️")
-        
-        # Rolling Correlation (Pearson tradicional)
-        st.markdown("### 📈 Rolling Correlation (Pearson)")
-        corr_df = calculate_rolling_correlation(df_all_prices, asset1, asset2, window=rolling_window, step=1)
-        st.plotly_chart(
-            plot_rolling_correlation(corr_df, ASSETS[asset1]['label'], ASSETS[asset2]['label']),
+            plot_cross_correlation(cross_corr, asset1_name, asset2_name),
             use_container_width=True
         )
         
         # Métricas
-        st.markdown("### 📊 Métricas")
+        best_row = cross_corr.loc[cross_corr['correlation'].abs().idxmax()]
+        optimal_lag = int(best_row['lag'])
+        max_corr = best_row['correlation']
+        base_corr = cross_corr[cross_corr['lag'] == 0]['correlation'].values[0]
         
         col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Correlación Base (lag=0)", f"{base_corr:.4f}")
+        col2.metric("Lag Óptimo", f"{optimal_lag} días")
+        col3.metric("Correlación Máxima", f"{max_corr:.4f}")
+        col4.metric("Mejora", f"{abs(max_corr) - abs(base_corr):.4f}")
         
-        current_corr = corr_df['correlation'].iloc[-1]
-        mean_corr = corr_df['correlation'].mean()
-        max_corr = corr_df['correlation'].max()
-        min_corr = corr_df['correlation'].min()
+        # Interpretación
+        if optimal_lag > 0:
+            st.success(f"**🎯 {asset1_name} LIDERA** → {asset2_name} sigue con {optimal_lag} días de retraso")
+        elif optimal_lag < 0:
+            st.success(f"**🎯 {asset2_name} LIDERA** → {asset1_name} sigue con {abs(optimal_lag)} días de retraso")
+        else:
+            st.info("**↔ Movimiento simultáneo** - No hay un líder claro")
         
-        col1.metric("Actual", f"{current_corr:.4f}")
-        col2.metric("Media", f"{mean_corr:.4f}")
-        col3.metric("Máx", f"{max_corr:.4f}")
-        col4.metric("Mín", f"{min_corr:.4f}")
+        st.markdown("---")
         
-        # Precios
-        st.markdown("### 📉 Comparación de Precios")
+        # 2. Rolling Lead-Lag
+        st.markdown("### 🔄 Análisis Rolling (Dinámico)")
+        
+        with st.spinner("Calculando lead-lag rolling..."):
+            lead_lag_rolling = calculate_rolling_lead_lag(
+                returns1, returns2, 
+                window=rolling_window, 
+                max_lag=min(max_lag, 10)
+            )
+        
+        if len(lead_lag_rolling) > 0:
+            st.plotly_chart(
+                plot_rolling_lead_lag(lead_lag_rolling, asset1_name, asset2_name),
+                use_container_width=True
+            )
+            
+            # Estadísticas de estabilidad
+            stability = analyze_leadership_stability(lead_lag_rolling)
+            
+            if stability:
+                st.markdown("### 📈 Estabilidad del Liderazgo")
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.plotly_chart(
+                        plot_leadership_distribution(stability, asset1_name, asset2_name),
+                        use_container_width=True
+                    )
+                
+                with col2:
+                    st.plotly_chart(
+                        plot_lag_histogram(lead_lag_rolling),
+                        use_container_width=True
+                    )
+                
+                # Métricas de estabilidad
+                col1, col2, col3, col4 = st.columns(4)
+                
+                col1.metric(
+                    f"% {asset1_name[:15]} lidera",
+                    f"{stability['leadership_distribution']['asset1_pct']:.1f}%"
+                )
+                col2.metric(
+                    f"% {asset2_name[:15]} lidera",
+                    f"{stability['leadership_distribution']['asset2_pct']:.1f}%"
+                )
+                col3.metric(
+                    "Frecuencia de Cambios",
+                    f"{stability['stability']['change_frequency']:.1f}%",
+                    delta="Estable ✅" if stability['stability']['change_frequency'] < 30 else "Inestable ⚠️"
+                )
+                col4.metric(
+                    "Racha Promedio",
+                    f"{stability['stability']['avg_streak_length']:.1f} días"
+                )
+                
+                st.markdown("---")
+                
+                # Estadísticas del lag
+                st.markdown("### 📊 Estadísticas del Lag")
+                
+                col1, col2, col3, col4, col5 = st.columns(5)
+                col1.metric("Media", f"{stability['lag_statistics']['mean']:.2f}")
+                col2.metric("Mediana", f"{stability['lag_statistics']['median']:.1f}")
+                col3.metric("Desv. Std", f"{stability['lag_statistics']['std']:.2f}")
+                col4.metric("Mínimo", f"{stability['lag_statistics']['min']:.0f}")
+                col5.metric("Máximo", f"{stability['lag_statistics']['max']:.0f}")
+        
+        st.markdown("---")
+        
+        # 3. Visualización de Retornos con Lag
+        st.markdown("### 📉 Retornos: Original vs Con Lag Aplicado")
+        
         st.plotly_chart(
-            plot_price_comparison(df_all_prices, asset1, asset2, 
-                                 ASSETS[asset1]['label'], ASSETS[asset2]['label']),
+            plot_returns_with_lag(returns1, returns2, optimal_lag, asset1_name, asset2_name),
             use_container_width=True
         )
         
-        # Correlación condicional
-        st.markdown("### 🔍 Correlación Condicional")
-        returns1 = np.log(prices1 / prices1.shift(1)).dropna()
-        returns2 = np.log(prices2 / prices2.shift(1)).dropna()
-        cond_corr = calculate_conditional_correlation(returns1, returns2)
+        # Correlación antes y después
+        if optimal_lag != 0:
+            if optimal_lag > 0:
+                r1_aligned = returns1.iloc[:-optimal_lag].values
+                r2_aligned = returns2.iloc[optimal_lag:].values
+            else:
+                r1_aligned = returns1.iloc[-optimal_lag:].values
+                r2_aligned = returns2.iloc[:optimal_lag].values
+            
+            corr_after = np.corrcoef(r1_aligned, r2_aligned)[0, 1]
+            
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Correlación Original", f"{base_corr:.4f}")
+            col2.metric("Correlación con Lag", f"{corr_after:.4f}")
+            col3.metric("Mejora", f"{(abs(corr_after) - abs(base_corr))*100:.2f}%")
         
-        st.plotly_chart(plot_conditional_correlation(cond_corr), use_container_width=True)
+        st.markdown("---")
         
-        # Distribución Temporal
-        st.markdown("### 📈 Distribución Temporal")
+        # 4. Causalidad de Granger (simplificada)
+        st.markdown("### 🔬 Análisis de Causalidad (Granger Simplificado)")
         
-        positive = (corr_df['correlation'] > 0).sum()
-        negative = (corr_df['correlation'] < 0).sum()
-        strong_pos = (corr_df['correlation'] > 0.5).sum()
-        strong_neg = (corr_df['correlation'] < -0.5).sum()
-        total = len(corr_df)
+        granger = calculate_granger_causality_simple(returns1, returns2, max_lag=5)
         
-        col1, col2, col3, col4 = st.columns(4)
-        
-        col1.metric("% Positiva", f"{positive/total*100:.1f}%")
-        col2.metric("% Negativa", f"{negative/total*100:.1f}%")
-        col3.metric("% Fuerte + (>0.5)", f"{strong_pos/total*100:.1f}%")
-        col4.metric("% Fuerte - (<-0.5)", f"{strong_neg/total*100:.1f}%")
-        
-        # Períodos históricos
-        st.markdown("### 📅 Períodos Históricos")
-        
-        historical_df = calculate_historical_periods(df_all_prices, asset1, asset2)
-        
-        if len(historical_df) > 0:
-            st.dataframe(
-                historical_df.style.format({
-                    'correlation': '{:.3f}',
-                    'beta_ols': '{:.3f}',
-                    'spread_mean': '{:.4f}',
-                    'spread_std': '{:.4f}',
-                    'spread_min': '{:.4f}',
-                    'spread_max': '{:.4f}'
-                }),
-                use_container_width=True
-            )
-        
-        st.session_state.run_analysis = False
-    
-    else:
-        st.info("👆 Selecciona activos y presiona **Analizar**")
+        if granger:
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown(f"#### {asset1_name} → {asset2_name}")
+                r2_improve = granger['asset1_causes_asset2']['improvement'] * 100
+                st.metric(
+                    "Mejora R²",
+                    f"{r2_improve:.2f}%",
+                    delta="Causal ✅" if granger['asset1_causes_asset2']['causes'] else "No Causal"
+                )
+            
+            with col2:
+                st.markdown(f"#### {asset2_name} → {asset1_name}")
+                r2_improve = granger['asset2_causes_asset1']['improvement'] * 100
+                st.metric(
+                    "Mejora R²",
+                    f"{r2_improve:.2f}%",
+                    delta="Causal ✅" if granger['asset2_causes_asset1']['causes'] else "No Causal"
+                )
+            
+            # Conclusión
+            if granger['bidirectional']:
+                st.warning("⚠️ **Causalidad Bidireccional** - Ambos activos se influencian mutuamente")
+            else:
+                dominant = granger['dominant_leader']
+                st.success(f"**🎯 Líder Dominante: {ASSETS[asset1]['label'] if dominant == 'asset1' else ASSETS[asset2]['label']}**")
 
 # ============================================================================
-# TAB 3: ANÁLISIS DE BETA
+# TAB 3: ANÁLISIS POR RÉGIMEN
 # ============================================================================
 
 with tab3:
-    st.header("🔢 Análisis de Beta (Hedge Ratio)")
+    st.header("📈 Análisis Lead-Lag por Régimen de Mercado")
     
     st.info("""
-    **¿Qué es el Beta?**
+    **¿Por qué importa el régimen?**
     
-    El Beta (β) es el **hedge ratio** que determina cuántas unidades del Activo 2 necesitas 
-    para replicar el Activo 1:
-    
-    **Spread = ln(P₁) - β × ln(P₂)**
-    
-    - **β = 1**: Relación 1:1 (simplificación)
-    - **β > 1**: Activo 2 es menos volátil que Activo 1
-    - **β < 1**: Activo 2 es más volátil que Activo 1
-    
-    **Métodos:**
-    - **OLS**: Mínimos cuadrados ordinarios (sensible a outliers)
-    - **Theil-Sen**: Robusto a outliers (usa mediana de pendientes)
+    El liderazgo puede cambiar según las condiciones del mercado:
+    - 📈 **Mercado Alcista**: Un activo puede liderar en tendencias alcistas
+    - 📉 **Mercado Bajista**: El liderazgo puede invertirse en caídas
+    - 🌊 **Alta Volatilidad**: La dinámica puede cambiar en crisis
+    - 😴 **Baja Volatilidad**: Comportamiento diferente en mercados calmados
     """)
     
     available_assets = list(st.session_state.all_asset_data.keys())
     
-    default_beta_asset1 = st.session_state.get('selected_asset1', available_assets[0])
-    default_beta_asset2 = st.session_state.get('selected_asset2', available_assets[1] if len(available_assets) > 1 else available_assets[0])
-    
-    if default_beta_asset2 == default_beta_asset1 and len(available_assets) > 1:
-        default_beta_asset2 = available_assets[1]
-    
     col1, col2 = st.columns(2)
     
     with col1:
-        beta_asset1 = st.selectbox(
-            "Activo 1 (Y)",
-            options=available_assets,
-            index=available_assets.index(default_beta_asset1) if default_beta_asset1 in available_assets else 0,
-            format_func=lambda x: ASSETS[x]['label'],
-            key='beta_asset1'
-        )
-    
-    with col2:
-        beta_asset2_options = [a for a in available_assets if a != beta_asset1]
-        beta_asset2 = st.selectbox(
-            "Activo 2 (X)",
-            options=beta_asset2_options,
-            index=beta_asset2_options.index(default_beta_asset2) if default_beta_asset2 in beta_asset2_options else 0,
-            format_func=lambda x: ASSETS[x]['label'],
-            key='beta_asset2'
-        )
-    
-    if st.button("🔄 Calcular Beta", type="primary", key='btn_calc_beta'):
-        
-        prices1 = df_all_prices[beta_asset1]
-        prices2 = df_all_prices[beta_asset2]
-        
-        # Beta estático
-        st.markdown("### 📊 Beta Estático (Todo el período)")
-        
-        beta_ols, alpha_ols = calculate_beta_ols(prices1, prices2)
-        beta_theil, alpha_theil = calculate_beta_theil_sen(prices1, prices2)
-        
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("β OLS", f"{beta_ols:.4f}")
-        col2.metric("β Theil-Sen", f"{beta_theil:.4f}")
-        col3.metric("Divergencia", f"{abs(beta_ols - beta_theil):.4f}",
-                   delta="Estable ✅" if abs(beta_ols - beta_theil) < 0.1 else "Inestable ⚠️")
-        col4.metric("Distancia de β=1", f"{abs(beta_ols - 1):.4f}",
-                   delta="Simple ✅" if abs(beta_ols - 1) < 0.15 else "Usar β")
-        
-        st.markdown("---")
-        
-        # Beta Rolling
-        st.markdown("### 📈 Beta Rolling (Dinámico)")
-        
-        beta_ols_rolling = calculate_rolling_beta(prices1, prices2, window=beta_window, method='ols')
-        beta_theil_rolling = calculate_rolling_beta(prices1, prices2, window=beta_window, method='theil_sen')
-        
-        # Gráfico comparativo
-        st.plotly_chart(
-            plot_beta_comparison(beta_ols_rolling, beta_theil_rolling, 
-                                ASSETS[beta_asset1]['label'], ASSETS[beta_asset2]['label']),
-            use_container_width=True
-        )
-        
-        # Análisis de estabilidad
-        st.markdown("### 🎯 Estabilidad del Beta")
-        
-        stability_ols = analyze_beta_stability(beta_ols_rolling)
-        stability_theil = analyze_beta_stability(beta_theil_rolling)
-        
-        if stability_ols and stability_theil:
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("#### OLS")
-                st.metric("Media", f"{stability_ols['mean']:.4f}")
-                st.metric("Desv. Std", f"{stability_ols['std']:.4f}")
-                st.metric("CV", f"{stability_ols['cv']:.4f}")
-                st.metric("Rango", f"{stability_ols['range']:.4f}")
-                st.metric("% > 1", f"{stability_ols['pct_above_1']:.1f}%")
-                st.metric("% < 1", f"{stability_ols['pct_below_1']:.1f}%")
-            
-            with col2:
-                st.markdown("#### Theil-Sen")
-                st.metric("Media", f"{stability_theil['mean']:.4f}")
-                st.metric("Desv. Std", f"{stability_theil['std']:.4f}")
-                st.metric("CV", f"{stability_theil['cv']:.4f}")
-                st.metric("Rango", f"{stability_theil['range']:.4f}")
-                st.metric("% > 1", f"{stability_theil['pct_above_1']:.1f}%")
-                st.metric("% < 1", f"{stability_theil['pct_below_1']:.1f}%")
-        
-        # Distribución del Beta
-        st.markdown("### 📊 Distribución del Beta")
-        st.plotly_chart(plot_beta_distribution(beta_ols_rolling), use_container_width=True)
-        
-        st.markdown("---")
-        
-        # Comparación de Spreads
-        st.markdown("### 🔄 Comparación de Spreads: β=1 vs β estimado")
-        
-        st.plotly_chart(
-            plot_spread_comparison(prices1, prices2, beta_ols,
-                                  ASSETS[beta_asset1]['label'], ASSETS[beta_asset2]['label']),
-            use_container_width=True
-        )
-        
-        # Tests de estacionariedad comparativos
-        st.markdown("### 📋 Tests de Estacionariedad (Spread)")
-        
-        spread_simple = calculate_log_ratio_spread(prices1, prices2)
-        spread_beta = calculate_spread_with_beta(prices1, prices2, beta_ols)
-        
-        adf_simple = adf_test(spread_simple)
-        adf_beta = adf_test(spread_beta)
-        
-        hurst_simple = calculate_hurst_exponent(spread_simple.dropna())
-        hurst_beta = calculate_hurst_exponent(spread_beta.dropna())
-        
-        hl_simple = calculate_half_life(spread_simple)
-        hl_beta = calculate_half_life(spread_beta)
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### Spread (β = 1)")
-            st.metric("ADF p-value", f"{adf_simple['pvalue']:.4f}",
-                     delta="Estacionario ✅" if adf_simple['stationary'] else "No Estacionario ❌")
-            st.metric("Hurst", f"{hurst_simple:.4f}",
-                     delta="Mean Reverting ✅" if hurst_simple < 0.5 else "Trending ⚠️")
-            st.metric("Half-Life", f"{hl_simple:.1f} días" if not np.isnan(hl_simple) else "N/A")
-        
-        with col2:
-            st.markdown(f"#### Spread (β = {beta_ols:.3f})")
-            st.metric("ADF p-value", f"{adf_beta['pvalue']:.4f}",
-                     delta="Estacionario ✅" if adf_beta['stationary'] else "No Estacionario ❌")
-            st.metric("Hurst", f"{hurst_beta:.4f}",
-                     delta="Mean Reverting ✅" if hurst_beta < 0.5 else "Trending ⚠️")
-            st.metric("Half-Life", f"{hl_beta:.1f} días" if not np.isnan(hl_beta) else "N/A")
-        
-        # Recomendación
-        st.markdown("---")
-        st.markdown("### 💡 Recomendación")
-        
-        use_beta = (
-            (adf_beta['pvalue'] < adf_simple['pvalue']) or
-            (hurst_beta < hurst_simple) or
-            (abs(beta_ols - 1) > 0.15)
-        )
-        
-        if use_beta:
-            st.success(f"""
-            **✅ Usar Beta = {beta_ols:.3f}**
-            
-            Razones:
-            - El spread con β estimado es {'más estacionario' if adf_beta['pvalue'] < adf_simple['pvalue'] else 'similar en estacionariedad'}
-            - Hurst con β: {hurst_beta:.3f} vs sin β: {hurst_simple:.3f}
-            - Beta está {'lejos' if abs(beta_ols - 1) > 0.15 else 'cerca'} de 1 (distancia: {abs(beta_ols - 1):.3f})
-            
-            **Fórmula para tu EA:**
-            ```
-            spread = ln(P1) - {beta_ols:.3f} × ln(P2)
-            ```
-            """)
-        else:
-            st.info(f"""
-            **ℹ️ Puedes usar Beta = 1 (simplificación)**
-            
-            Razones:
-            - Beta está cerca de 1 (valor: {beta_ols:.3f})
-            - Diferencia de estacionariedad es mínima
-            - Simplicidad sin pérdida significativa de calidad
-            
-            **Fórmula simplificada:**
-            ```
-            spread = ln(P1) - ln(P2)
-            ```
-            """)
-    
-    else:
-        st.info("👆 Selecciona activos y presiona **Calcular Beta**")
-
-# ============================================================================
-# TAB 4: COMPARACIÓN
-# ============================================================================
-
-with tab4:
-    st.header("📈 Comparación de Pares")
-    
-    if 'positive_pairs' in st.session_state and 'negative_pairs' in st.session_state:
-        
-        st.markdown("### 📈 Top 10 - Correlación Positiva")
-        
-        if len(st.session_state.positive_pairs) > 0:
-            top_pos = st.session_state.positive_pairs.head(10).to_dict('records')
-            
-            with st.spinner("Generando gráficos..."):
-                fig_pos = plot_multiple_rolling_correlations(df_all_prices, top_pos, window=rolling_window)
-                st.plotly_chart(fig_pos, use_container_width=True)
-        else:
-            st.info("No hay pares")
-        
-        st.markdown("---")
-        
-        st.markdown("### 📉 Top 10 - Correlación Negativa")
-        
-        if len(st.session_state.negative_pairs) > 0:
-            top_neg = st.session_state.negative_pairs.head(10).to_dict('records')
-            
-            with st.spinner("Generando gráficos..."):
-                fig_neg = plot_multiple_rolling_correlations(df_all_prices, top_neg, window=rolling_window)
-                st.plotly_chart(fig_neg, use_container_width=True)
-        else:
-            st.info("No hay pares")
-        
-        st.markdown("---")
-        
-        st.markdown("### 📊 Comparación de Métricas (con Beta)")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            if len(st.session_state.positive_pairs) > 0:
-                st.markdown("#### Positivos: Score vs Beta")
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=st.session_state.positive_pairs['score'],
-                    y=st.session_state.positive_pairs['beta_ols'],
-                    mode='markers',
-                    marker=dict(
-                        size=st.session_state.positive_pairs['years_data'] * 3,
-                        color=st.session_state.positive_pairs['mean_correlation'],
-                        colorscale='Viridis',
-                        showscale=True,
-                        colorbar=dict(title="Corr")
-                    ),
-                    text=[f"{ASSETS[row['asset1']]['label']} / {ASSETS[row['asset2']]['label']}<br>β={row['beta_ols']:.3f}" 
-                          for _, row in st.session_state.positive_pairs.iterrows()],
-                    hovertemplate='<b>%{text}</b><br>Score: %{x:.1f}<br>Beta: %{y:.3f}<extra></extra>'
-                ))
-                
-                fig.add_hline(y=1, line_dash="dash", line_color="#ef4444", opacity=0.5,
-                             annotation_text="β=1")
-                
-                fig.update_layout(
-                    title='Score vs Beta OLS',
-                    xaxis_title='Score',
-                    yaxis_title='Beta OLS',
-                    template='plotly_dark',
-                    height=400
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            if len(st.session_state.negative_pairs) > 0:
-                st.markdown("#### Negativos: Score vs Beta")
-                
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(
-                    x=st.session_state.negative_pairs['score'],
-                    y=st.session_state.negative_pairs['beta_ols'],
-                    mode='markers',
-                    marker=dict(
-                        size=st.session_state.negative_pairs['years_data'] * 3,
-                        color=st.session_state.negative_pairs['mean_correlation'],
-                        colorscale='Plasma',
-                        showscale=True,
-                        colorbar=dict(title="Corr")
-                    ),
-                    text=[f"{ASSETS[row['asset1']]['label']} / {ASSETS[row['asset2']]['label']}<br>β={row['beta_ols']:.3f}" 
-                          for _, row in st.session_state.negative_pairs.iterrows()],
-                    hovertemplate='<b>%{text}</b><br>Score: %{x:.1f}<br>Beta: %{y:.3f}<extra></extra>'
-                ))
-                
-                fig.update_layout(
-                    title='Score vs Beta OLS',
-                    xaxis_title='Score',
-                    yaxis_title='Beta OLS',
-                    template='plotly_dark',
-                    height=400
-                )
-                
-                st.plotly_chart(fig, use_container_width=True)
-    
-    else:
-        st.info("👆 Ejecuta la búsqueda primero")
-
-# ============================================================================
-# TAB 5: ESTACIONALIDAD
-# ============================================================================
-
-with tab5:
-    st.header("📅 Análisis de Estacionalidad")
-    st.info("Identifica patrones estacionales en correlación y spread")
-    
-    available_assets = list(st.session_state.all_asset_data.keys())
-    
-    default_season_asset1 = st.session_state.get('selected_asset1', available_assets[0])
-    default_season_asset2 = st.session_state.get('selected_asset2', available_assets[1] if len(available_assets) > 1 else available_assets[0])
-    
-    if default_season_asset2 == default_season_asset1 and len(available_assets) > 1:
-        default_season_asset2 = available_assets[1]
-    
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        season_asset1 = st.selectbox(
+        regime_asset1 = st.selectbox(
             "Activo 1",
             options=available_assets,
-            index=available_assets.index(default_season_asset1) if default_season_asset1 in available_assets else 0,
             format_func=lambda x: ASSETS[x]['label'],
-            key='season_asset1'
+            key='regime_asset1'
         )
     
     with col2:
-        season_asset2_options = [a for a in available_assets if a != season_asset1]
-        season_asset2 = st.selectbox(
+        regime_asset2_options = [a for a in available_assets if a != regime_asset1]
+        regime_asset2 = st.selectbox(
             "Activo 2",
-            options=season_asset2_options,
-            index=season_asset2_options.index(default_season_asset2) if default_season_asset2 in season_asset2_options else 0,
+            options=regime_asset2_options,
             format_func=lambda x: ASSETS[x]['label'],
-            key='season_asset2'
+            key='regime_asset2'
         )
     
-    if st.button("🔄 Analizar Estacionalidad", type="primary"):
+    if st.button("📊 Analizar por Régimen", type="primary"):
         
-        with st.spinner("Analizando..."):
-            seasonality = analyze_seasonality(df_all_prices, season_asset1, season_asset2, lookback_analysis)
+        prices1 = df_all_prices[regime_asset1].dropna()
+        prices2 = df_all_prices[regime_asset2].dropna()
         
-        st.success("✅ Completado")
+        common_idx = prices1.index.intersection(prices2.index)
+        prices1 = prices1.loc[common_idx]
+        prices2 = prices2.loc[common_idx]
         
-        # Mensual
-        st.markdown("### 📅 Análisis Mensual")
+        returns1 = np.log(prices1 / prices1.shift(1)).dropna()
+        returns2 = np.log(prices2 / prices2.shift(1)).dropna()
         
-        col1, col2 = st.columns(2)
+        common_idx_returns = returns1.index.intersection(returns2.index)
+        returns1 = returns1.loc[common_idx_returns]
+        returns2 = returns2.loc[common_idx_returns]
         
-        with col1:
-            st.markdown("#### Correlación por Mes")
-            fig_monthly_corr = plot_seasonality_monthly(
-                seasonality['monthly_corr'],
-                'Correlación Media por Mes',
-                'Correlación'
-            )
-            st.plotly_chart(fig_monthly_corr, use_container_width=True)
+        asset1_name = ASSETS[regime_asset1]['label']
+        asset2_name = ASSETS[regime_asset2]['label']
         
-        with col2:
-            st.markdown("#### Volatilidad del Spread")
-            fig_monthly_vol = plot_seasonality_monthly(
-                seasonality['monthly_spread_vol'],
-                'Volatilidad del Spread por Mes',
-                'Volatilidad'
-            )
-            st.plotly_chart(fig_monthly_vol, use_container_width=True)
+        # Análisis por régimen
+        with st.spinner("Analizando por régimen..."):
+            regime_results = calculate_lead_lag_by_regime(returns1, returns2, max_lag=max_lag)
         
-        # Tabla mensual
-        st.markdown("#### 📊 Estadísticas Mensuales")
-        
-        monthly_stats = seasonality['monthly_corr'].copy()
-        monthly_stats.index = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
-                              'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-        
-        st.dataframe(
-            monthly_stats.style.format({
-                'mean': '{:.3f}',
-                'std': '{:.3f}',
-                'min': '{:.3f}',
-                'max': '{:.3f}'
-            }),
+        # Gráfico principal
+        st.plotly_chart(
+            plot_regime_lead_lag(regime_results, asset1_name, asset2_name),
             use_container_width=True
         )
         
-        st.markdown("---")
+        # Tabla detallada
+        st.markdown("### 📋 Detalle por Régimen")
         
-        # Trimestral
-        st.markdown("### 📊 Análisis Trimestral")
+        regime_labels = {
+            'high_volatility': '🌊 Alta Volatilidad',
+            'low_volatility': '😴 Baja Volatilidad',
+            'bull_market': '📈 Mercado Alcista',
+            'bear_market': '📉 Mercado Bajista'
+        }
         
-        col1, col2 = st.columns(2)
+        regime_data = []
+        for regime, data in regime_results.items():
+            if data:
+                leader_name = asset1_name if data['leader'] == 'asset1' else (
+                    asset2_name if data['leader'] == 'asset2' else 'Simultáneo'
+                )
+                regime_data.append({
+                    'Régimen': regime_labels.get(regime, regime),
+                    'Lag Óptimo': data['optimal_lag'],
+                    'Correlación': data['max_correlation'],
+                    'Líder': leader_name,
+                    'Observaciones': data['n_observations']
+                })
         
-        with col1:
-            st.markdown("#### Correlación por Trimestre")
-            fig_quarterly_corr = plot_seasonality_quarterly(
-                seasonality['quarterly_corr'],
-                'Correlación por Trimestre',
-                'Correlación'
-            )
-            st.plotly_chart(fig_quarterly_corr, use_container_width=True)
-        
-        with col2:
-            st.markdown("#### Volatilidad del Spread")
-            fig_quarterly_vol = plot_seasonality_quarterly(
-                seasonality['quarterly_spread_vol'],
-                'Volatilidad por Trimestre',
-                'Volatilidad'
-            )
-            st.plotly_chart(fig_quarterly_vol, use_container_width=True)
-        
-        st.markdown("---")
-        
-        # Anual
-        st.markdown("### 📈 Análisis Anual")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.markdown("#### Correlación por Año")
-            fig_yearly_corr = plot_seasonality_yearly(
-                seasonality['yearly_corr'],
-                'Correlación por Año',
-                'Correlación'
-            )
-            st.plotly_chart(fig_yearly_corr, use_container_width=True)
-        
-        with col2:
-            st.markdown("#### Volatilidad del Spread")
-            fig_yearly_vol = plot_seasonality_yearly(
-                seasonality['yearly_spread_vol'],
-                'Volatilidad por Año',
-                'Volatilidad'
-            )
-            st.plotly_chart(fig_yearly_vol, use_container_width=True)
-        
-        # Tabla anual
-        st.markdown("#### 📊 Estadísticas Anuales")
-        
-        st.dataframe(
-            seasonality['yearly_corr'].style.format({
-                'mean': '{:.3f}',
-                'std': '{:.3f}',
-                'min': '{:.3f}',
-                'max': '{:.3f}'
-            }),
-            use_container_width=True
-        )
-        
-        st.markdown("---")
-        
-        # Períodos históricos con Beta
-        st.markdown("### 📅 Períodos Históricos (con Beta)")
-        
-        historical_df = calculate_historical_periods(df_all_prices, season_asset1, season_asset2)
-        
-        if len(historical_df) > 0:
+        if regime_data:
+            regime_df = pd.DataFrame(regime_data)
             st.dataframe(
-                historical_df.style.format({
-                    'correlation': '{:.3f}',
-                    'beta_ols': '{:.3f}',
-                    'spread_mean': '{:.4f}',
-                    'spread_std': '{:.4f}',
-                    'spread_min': '{:.4f}',
-                    'spread_max': '{:.4f}'
+                regime_df.style.format({
+                    'Lag Óptimo': '{:d}',
+                    'Correlación': '{:.3f}',
+                    'Observaciones': '{:,}'
                 }),
                 use_container_width=True
             )
-            
-            # Gráfico de correlación y beta por período
-            fig = make_subplots(rows=1, cols=2, subplot_titles=('Correlación por Período', 'Beta por Período'))
-            
-            fig.add_trace(go.Bar(
-                x=historical_df['period'],
-                y=historical_df['correlation'],
-                marker_color=['#10b981' if c > 0 else '#ef4444' for c in historical_df['correlation']],
-                text=historical_df['correlation'].round(3),
-                textposition='auto',
-                showlegend=False
-            ), row=1, col=1)
-            
-            fig.add_trace(go.Bar(
-                x=historical_df['period'],
-                y=historical_df['beta_ols'],
-                marker_color='#8b5cf6',
-                text=historical_df['beta_ols'].round(3),
-                textposition='auto',
-                showlegend=False
-            ), row=1, col=2)
-            
-            fig.add_hline(y=1, line_dash="dash", line_color="#ef4444", opacity=0.5, row=1, col=2)
-            
-            fig.update_layout(
-                template='plotly_dark',
-                height=400
-            )
-            
-            st.plotly_chart(fig, use_container_width=True)
         
+        # Análisis
+        st.markdown("### 💡 Interpretación")
+        
+        # Comparar volatilidad
+        if regime_results.get('high_volatility') and regime_results.get('low_volatility'):
+            hv = regime_results['high_volatility']
+            lv = regime_results['low_volatility']
+            
+            if hv['leader'] != lv['leader']:
+                st.warning(f"""
+                **⚠️ Cambio de Liderazgo según Volatilidad:**
+                - Alta volatilidad: **{asset1_name if hv['leader'] == 'asset1' else asset2_name}** lidera
+                - Baja volatilidad: **{asset1_name if lv['leader'] == 'asset1' else asset2_name}** lidera
+                
+                Esto sugiere que la dinámica del par cambia en períodos de estrés.
+                """)
+            else:
+                st.success(f"""
+                **✅ Liderazgo Consistente en Volatilidad:**
+                - **{asset1_name if hv['leader'] == 'asset1' else asset2_name}** lidera tanto en alta como baja volatilidad
+                """)
+        
+        # Comparar tendencia
+        if regime_results.get('bull_market') and regime_results.get('bear_market'):
+            bull = regime_results['bull_market']
+            bear = regime_results['bear_market']
+            
+            if bull['leader'] != bear['leader']:
+                st.warning(f"""
+                **⚠️ Cambio de Liderazgo según Tendencia:**
+                - Mercado alcista: **{asset1_name if bull['leader'] == 'asset1' else asset2_name}** lidera
+                - Mercado bajista: **{asset1_name if bear['leader'] == 'asset1' else asset2_name}** lidera
+                
+                El líder se invierte según la dirección del mercado.
+                """)
+            else:
+                st.success(f"""
+                **✅ Liderazgo Consistente en Tendencia:**
+                - **{asset1_name if bull['leader'] == 'asset1' else asset2_name}** lidera en ambas direcciones
+                """)
+        
+        # Recomendaciones para trading
         st.markdown("---")
+        st.markdown("### 🎯 Recomendaciones para Trading")
         
-        # Recomendaciones
-        st.markdown("### 💡 Recomendaciones")
+        consistent_leader = None
+        for regime, data in regime_results.items():
+            if data and data['leader'] != 'simultaneous':
+                if consistent_leader is None:
+                    consistent_leader = data['leader']
+                elif consistent_leader != data['leader']:
+                    consistent_leader = 'mixed'
+                    break
         
-        best_months = seasonality['monthly_corr']['mean'].abs().nlargest(3)
-        worst_months = seasonality['monthly_corr']['mean'].abs().nsmallest(3)
-        
-        months_names = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
-                       'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.success("**✅ Mejores Meses**")
-            for month_num in best_months.index:
-                st.write(f"- **{months_names[month_num-1]}**: {best_months[month_num]:.3f}")
-        
-        with col2:
-            st.warning("**⚠️ Meses con Menor Correlación**")
-            for month_num in worst_months.index:
-                st.write(f"- **{months_names[month_num-1]}**: {worst_months[month_num]:.3f}")
-    
-    else:
-        st.info("👆 Selecciona activos y presiona **Analizar Estacionalidad**")
+        if consistent_leader and consistent_leader != 'mixed':
+            leader_name = asset1_name if consistent_leader == 'asset1' else asset2_name
+            follower_name = asset2_name if consistent_leader == 'asset1' else asset1_name
+            
+            # Calcular lag promedio
+            avg_lag = np.mean([data['optimal_lag'] for data in regime_results.values() if data])
+            
+            st.success(f"""
+            **📊 Estrategia Sugerida:**
+            
+            1. **Líder Consistente**: {leader_name}
+            2. **Seguidor**: {follower_name}
+            3. **Lag Promedio**: {avg_lag:.1f} días
+            
+            **Implementación:**
+            - Monitorear señales en {leader_name}
+            - Esperar confirmación/divergencia en {follower_name}
+            - Considerar el lag de ~{abs(avg_lag):.0f} días para timing de entradas
+            """)
+        else:
+            st.info("""
+            **⚠️ Sin Líder Consistente**
+            
+            El liderazgo varía según el régimen de mercado. Considera:
+            - Adaptar la estrategia al régimen actual
+            - Usar indicadores de régimen para switching
+            - Mayor cautela en las señales
+            """)
 
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.header("📚 Guía")
 st.sidebar.markdown("""
-**Flujo:**
-1. 🔍 Búsqueda de pares
-2. 📊 Análisis individual
-3. 🔢 **Análisis de Beta** (NUEVO)
-4. 📈 Comparación múltiple
-5. 📅 Estacionalidad
+**Conceptos Clave:**
 
-**Nuevas Funcionalidades:**
-- 🔢 Beta OLS y Theil-Sen
-- 📈 Pearson, Spearman, Kendall
-- 🔄 Spread con β estimado
-- 📊 Comparación β=1 vs β
-- 🎯 Análisis de estabilidad
+**Lead-Lag**: Un activo se mueve 
+primero (líder) y otro sigue 
+(rezagado).
 
-**10 años de datos**
-**DXY incluido**
+**Lag Positivo**: Activo 1 lidera
+**Lag Negativo**: Activo 2 lidera
+
+**Cross-Correlation**: 
+Correlación calculada con 
+diferentes desplazamientos 
+temporales.
+
+**Uso en Trading:**
+- Predecir movimientos del 
+  activo rezagado
+- Mejorar timing de entradas
+- Confirmar divergencias
 """)
-
-st.sidebar.info("📊 Análisis estadístico con Beta")
