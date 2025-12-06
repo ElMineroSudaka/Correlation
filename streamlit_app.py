@@ -573,14 +573,17 @@ def find_pairs_with_lead_lag(df, min_correlation=0.4, max_lag=10, lookback=252):
             # Mejora sobre correlación base
             improvement = abs(max_corr) - abs(base_corr)
             
-            # Determinar líder
+            # Determinar líder (guardamos tanto el identificador como el asset real)
             if optimal_lag > 0:
+                leader_id = 'asset1'
                 leader = asset1
                 follower = asset2
             elif optimal_lag < 0:
+                leader_id = 'asset2'
                 leader = asset2
                 follower = asset1
             else:
+                leader_id = 'simultaneous'
                 leader = 'simultaneous'
                 follower = 'simultaneous'
             
@@ -629,6 +632,12 @@ def find_pairs_with_lead_lag(df, min_correlation=0.4, max_lag=10, lookback=252):
             else:
                 stability = None
             
+            # Determinar el porcentaje del líder
+            if stability and leader_id != 'simultaneous':
+                leader_pct = stability['leadership_distribution'][f'{leader_id}_pct']
+            else:
+                leader_pct = 0
+            
             candidates.append({
                 'asset1': asset1,
                 'asset2': asset2,
@@ -639,7 +648,7 @@ def find_pairs_with_lead_lag(df, min_correlation=0.4, max_lag=10, lookback=252):
                 'improvement': improvement,
                 'leader': leader,
                 'follower': follower,
-                'leader_pct': stability['leadership_distribution'][f'{leader}_pct'] if stability and leader != 'simultaneous' else 0,
+                'leader_pct': leader_pct,
                 'change_frequency': stability['stability']['change_frequency'] if stability else np.nan,
                 'avg_streak': stability['stability']['avg_streak_length'] if stability else np.nan,
             })
