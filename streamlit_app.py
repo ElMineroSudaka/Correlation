@@ -1118,7 +1118,7 @@ with tab1:
         st.markdown("---")
         st.markdown("### 🔬 Seleccionar para Análisis Detallado")
         
-        pair_options = [f"{row['Activo 1']} {row['Dirección']} {row['Activo 2']} (Lag={row['Lag']})" 
+        pair_options = [f"{row['Activo 1']} {row['Dirección']} {row['Activo 2']} (Lag={row['optimal_lag']})" 
                        for _, row in display_df.head(20).iterrows()]
         
         selected_pair = st.selectbox("Seleccionar par", options=pair_options)
