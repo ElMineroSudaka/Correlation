@@ -7,7 +7,7 @@ from plotly.subplots import make_subplots
 import time
 from datetime import datetime, timedelta
 from scipy import stats
-from statsmodels.tsa.stattools import adfuller, coint
+from statsmodels.tsa.stattools import adfuller, coint, grangercausalitytests
 import warnings
 import pickle
 import os
@@ -30,6 +30,13 @@ st.markdown("""
     h1, h2, h3 {color: #ffffff;}
 </style>
 """, unsafe_allow_html=True)
+
+# ============================================================================
+# CONSTANTES - VENTANAS FIJAS
+# ============================================================================
+
+ROLLING_WINDOW = 30  # Ventana fija para rolling correlation
+LOOKBACK_ANALYSIS = 30  # Ventana fija para análisis
 
 # ============================================================================
 # SISTEMA DE CACHE PERSISTENTE
@@ -295,7 +302,7 @@ def calculate_log_ratio_spread(prices1, prices2):
     spread = np.log(prices1) - np.log(prices2)
     return spread.dropna()
 
-def calculate_rolling_correlation(df, asset1, asset2, window=30, step=1):
+def calculate_rolling_correlation(df, asset1, asset2, window=ROLLING_WINDOW, step=1):
     """Calcula la correlación móvil entre dos activos"""
     correlations = []
     dates = []
@@ -393,10 +400,279 @@ def calculate_conditional_correlation(returns1, returns2):
     }
 
 # ============================================================================
+# FUNCIONES DE LEAD-LAG
+# ============================================================================
+
+def calculate_cross_correlation(returns1, returns2, max_lag=20):
+    """
+    Calcula cross-correlation entre dos series de retornos.
+    Lag positivo = returns1 lidera a returns2
+    Lag negativo = returns2 lidera a returns1
+    """
+    correlations = []
+    lags = range(-max_lag, max_lag + 1)
+    
+    for lag in lags:
+        if lag < 0:
+            # returns2 lidera (shift returns1 hacia adelante)
+            corr = returns1.shift(-lag).corr(returns2)
+        elif lag > 0:
+            # returns1 lidera (shift returns2 hacia adelante)
+            corr = returns1.corr(returns2.shift(lag))
+        else:
+            corr = returns1.corr(returns2)
+        correlations.append(corr)
+    
+    return pd.DataFrame({
+        'lag': list(lags),
+        'correlation': correlations
+    })
+
+def calculate_rolling_lead_lag(returns1, returns2, window=60, max_lag=10):
+    """
+    Calcula el lag óptimo de forma rolling para detectar cambios en la relación lead-lag.
+    """
+    optimal_lags = []
+    max_correlations = []
+    dates = []
+    
+    for i in range(window, len(returns1)):
+        r1_window = returns1.iloc[i-window:i]
+        r2_window = returns2.iloc[i-window:i]
+        
+        best_lag = 0
+        best_corr = r1_window.corr(r2_window)
+        
+        for lag in range(-max_lag, max_lag + 1):
+            if lag == 0:
+                continue
+            if lag < 0:
+                corr = r1_window.shift(-lag).corr(r2_window)
+            else:
+                corr = r1_window.corr(r2_window.shift(lag))
+            
+            if not np.isnan(corr) and abs(corr) > abs(best_corr):
+                best_corr = corr
+                best_lag = lag
+        
+        optimal_lags.append(best_lag)
+        max_correlations.append(best_corr)
+        dates.append(returns1.index[i])
+    
+    return pd.DataFrame({
+        'date': dates,
+        'optimal_lag': optimal_lags,
+        'max_correlation': max_correlations
+    })
+
+def granger_causality_test(returns1, returns2, max_lag=5):
+    """
+    Test de causalidad de Granger bidireccional.
+    Retorna p-values para ambas direcciones.
+    """
+    results = {
+        'asset1_causes_asset2': {},
+        'asset2_causes_asset1': {}
+    }
+    
+    # Preparar datos
+    df_test = pd.DataFrame({
+        'r1': returns1,
+        'r2': returns2
+    }).dropna()
+    
+    if len(df_test) < max_lag * 10:
+        return None
+    
+    try:
+        # Test: ¿r1 causa r2?
+        test1 = grangercausalitytests(df_test[['r2', 'r1']], maxlag=max_lag, verbose=False)
+        for lag in range(1, max_lag + 1):
+            results['asset1_causes_asset2'][lag] = test1[lag][0]['ssr_ftest'][1]
+        
+        # Test: ¿r2 causa r1?
+        test2 = grangercausalitytests(df_test[['r1', 'r2']], maxlag=max_lag, verbose=False)
+        for lag in range(1, max_lag + 1):
+            results['asset2_causes_asset1'][lag] = test2[lag][0]['ssr_ftest'][1]
+        
+        return results
+    except Exception as e:
+        return None
+
+def calculate_impulse_response(returns1, returns2, periods=20):
+    """
+    Calcula una aproximación simple de impulse response.
+    Mide cómo un shock en un activo afecta al otro en períodos futuros.
+    """
+    # Normalizar retornos
+    r1_norm = (returns1 - returns1.mean()) / returns1.std()
+    r2_norm = (returns2 - returns2.mean()) / returns2.std()
+    
+    # Identificar shocks grandes (> 2 std)
+    shock_threshold = 2.0
+    
+    # Shocks en asset1 -> respuesta en asset2
+    shock_dates_1 = r1_norm[r1_norm.abs() > shock_threshold].index
+    responses_1_to_2 = []
+    
+    for t in range(periods):
+        responses = []
+        for shock_date in shock_dates_1:
+            try:
+                shock_idx = returns2.index.get_loc(shock_date)
+                if shock_idx + t < len(returns2):
+                    responses.append(r2_norm.iloc[shock_idx + t])
+            except:
+                continue
+        if responses:
+            responses_1_to_2.append(np.mean(responses))
+        else:
+            responses_1_to_2.append(np.nan)
+    
+    # Shocks en asset2 -> respuesta en asset1
+    shock_dates_2 = r2_norm[r2_norm.abs() > shock_threshold].index
+    responses_2_to_1 = []
+    
+    for t in range(periods):
+        responses = []
+        for shock_date in shock_dates_2:
+            try:
+                shock_idx = returns1.index.get_loc(shock_date)
+                if shock_idx + t < len(returns1):
+                    responses.append(r1_norm.iloc[shock_idx + t])
+            except:
+                continue
+        if responses:
+            responses_2_to_1.append(np.mean(responses))
+        else:
+            responses_2_to_1.append(np.nan)
+    
+    return {
+        'periods': list(range(periods)),
+        'asset1_shock_to_asset2': responses_1_to_2,
+        'asset2_shock_to_asset1': responses_2_to_1,
+        'n_shocks_asset1': len(shock_dates_1),
+        'n_shocks_asset2': len(shock_dates_2)
+    }
+
+def find_lead_lag_pairs(df, min_correlation=0.3, max_lag=10):
+    """
+    Busca pares con relaciones lead-lag significativas.
+    """
+    assets = df.columns
+    candidates = []
+    
+    total_pairs = len(assets) * (len(assets) - 1) // 2
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    pair_idx = 0
+    
+    for i, asset1 in enumerate(assets):
+        for asset2 in assets[i+1:]:
+            pair_idx += 1
+            progress_bar.progress(pair_idx / total_pairs)
+            status_text.text(f"Analizando {pair_idx}/{total_pairs}: {ASSETS[asset1]['label'][:15]} vs {ASSETS[asset2]['label'][:15]}")
+            
+            prices1 = df[asset1].dropna()
+            prices2 = df[asset2].dropna()
+            
+            common_idx = prices1.index.intersection(prices2.index)
+            if len(common_idx) < 252:
+                continue
+            
+            p1 = prices1.loc[common_idx]
+            p2 = prices2.loc[common_idx]
+            
+            returns1 = np.log(p1 / p1.shift(1)).dropna()
+            returns2 = np.log(p2 / p2.shift(1)).dropna()
+            
+            common_ret_idx = returns1.index.intersection(returns2.index)
+            returns1 = returns1.loc[common_ret_idx]
+            returns2 = returns2.loc[common_ret_idx]
+            
+            # Cross-correlation
+            cross_corr = calculate_cross_correlation(returns1, returns2, max_lag=max_lag)
+            
+            # Encontrar lag óptimo
+            idx_max = cross_corr['correlation'].abs().idxmax()
+            optimal_lag = cross_corr.loc[idx_max, 'lag']
+            max_corr = cross_corr.loc[idx_max, 'correlation']
+            
+            # Correlación contemporánea
+            contemp_corr = cross_corr[cross_corr['lag'] == 0]['correlation'].values[0]
+            
+            # Solo incluir si hay lead-lag significativo
+            if abs(max_corr) < min_correlation:
+                continue
+            
+            # Granger causality
+            granger = granger_causality_test(returns1, returns2, max_lag=5)
+            
+            if granger:
+                # Mejor p-value para cada dirección
+                best_pval_1_to_2 = min(granger['asset1_causes_asset2'].values())
+                best_pval_2_to_1 = min(granger['asset2_causes_asset1'].values())
+            else:
+                best_pval_1_to_2 = np.nan
+                best_pval_2_to_1 = np.nan
+            
+            # Determinar líder
+            if optimal_lag > 0:
+                leader = asset1
+                follower = asset2
+                lead_days = optimal_lag
+            elif optimal_lag < 0:
+                leader = asset2
+                follower = asset1
+                lead_days = -optimal_lag
+            else:
+                leader = None
+                follower = None
+                lead_days = 0
+            
+            candidates.append({
+                'asset1': asset1,
+                'asset2': asset2,
+                'leader': leader,
+                'follower': follower,
+                'optimal_lag': optimal_lag,
+                'lead_days': lead_days,
+                'max_correlation': max_corr,
+                'contemp_correlation': contemp_corr,
+                'correlation_improvement': abs(max_corr) - abs(contemp_corr),
+                'granger_pval_1_to_2': best_pval_1_to_2,
+                'granger_pval_2_to_1': best_pval_2_to_1,
+                'granger_significant_1_to_2': best_pval_1_to_2 < 0.05 if not np.isnan(best_pval_1_to_2) else False,
+                'granger_significant_2_to_1': best_pval_2_to_1 < 0.05 if not np.isnan(best_pval_2_to_1) else False,
+                'years_data': (common_idx[-1] - common_idx[0]).days / 365.25
+            })
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    if not candidates:
+        return pd.DataFrame()
+    
+    df_result = pd.DataFrame(candidates)
+    
+    # Score basado en:
+    # - Mejora de correlación con lag
+    # - Significancia de Granger
+    # - Lead-lag claro (no contemporáneo)
+    df_result['score'] = (
+        df_result['correlation_improvement'] * 50 +
+        (df_result['granger_significant_1_to_2'] | df_result['granger_significant_2_to_1']).astype(int) * 30 +
+        (df_result['lead_days'] > 0).astype(int) * 20
+    )
+    
+    return df_result.sort_values('score', ascending=False)
+
+# ============================================================================
 # FUNCIONES DE ANÁLISIS DE ESTACIONALIDAD
 # ============================================================================
 
-def analyze_seasonality(df, asset1, asset2, lookback=100):
+def analyze_seasonality(df, asset1, asset2, lookback=LOOKBACK_ANALYSIS):
     """Analiza patrones estacionales en la correlación y el spread"""
     prices1 = df[asset1]
     prices2 = df[asset2]
@@ -497,7 +773,7 @@ def calculate_historical_periods(df, asset1, asset2):
     return pd.DataFrame(periods)
 
 def find_best_pairs(df, correlation_type='positive', min_correlation=0.5, 
-                    max_cv=0.4, lookback=100):
+                    max_cv=0.4, lookback=LOOKBACK_ANALYSIS):
     """Encuentra los mejores pares usando criterios estadísticos"""
     assets = df.columns
     candidates = []
@@ -656,7 +932,7 @@ def plot_rolling_correlation(corr_df, asset1_name, asset2_name):
     fig.add_hrect(y0=-1, y1=-0.5, fillcolor="#ef4444", opacity=0.1, line_width=0)
     
     fig.update_layout(
-        title=f'Rolling Correlation: {asset1_name} vs {asset2_name}',
+        title=f'Rolling Correlation ({ROLLING_WINDOW}d): {asset1_name} vs {asset2_name}',
         xaxis_title='Fecha',
         yaxis_title='Correlación',
         yaxis=dict(range=[-1, 1]),
@@ -668,7 +944,7 @@ def plot_rolling_correlation(corr_df, asset1_name, asset2_name):
     
     return fig
 
-def plot_multiple_rolling_correlations(df, pairs_list, window=10):
+def plot_multiple_rolling_correlations(df, pairs_list, window=ROLLING_WINDOW):
     """Múltiples gráficos de correlación"""
     fig = make_subplots(
         rows=(len(pairs_list) + 1) // 2, 
@@ -799,13 +1075,12 @@ def plot_correlation_stability(stability_df):
     return fig
 
 def plot_seasonality_monthly(monthly_data, title, ylabel):
-    """Gráfico de patrones mensuales - CORREGIDO"""
+    """Gráfico de patrones mensuales"""
     months = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 
               'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic']
     
     fig = go.Figure()
     
-    # Verificar si es DataFrame o Series
     if isinstance(monthly_data, pd.DataFrame) and 'mean' in monthly_data.columns:
         fig.add_trace(go.Scatter(
             x=months,
@@ -828,7 +1103,6 @@ def plot_seasonality_monthly(monthly_data, title, ylabel):
                 hoverinfo='skip'
             ))
     else:
-        # Es una Series
         fig.add_trace(go.Bar(
             x=months,
             y=monthly_data.values,
@@ -847,12 +1121,11 @@ def plot_seasonality_monthly(monthly_data, title, ylabel):
     return fig
 
 def plot_seasonality_quarterly(quarterly_data, title, ylabel):
-    """Gráfico de patrones trimestrales - CORREGIDO"""
+    """Gráfico de patrones trimestrales"""
     quarters = ['Q1', 'Q2', 'Q3', 'Q4']
     
     fig = go.Figure()
     
-    # Verificar si es DataFrame o Series
     if isinstance(quarterly_data, pd.DataFrame) and 'mean' in quarterly_data.columns:
         fig.add_trace(go.Bar(
             x=quarters,
@@ -861,7 +1134,6 @@ def plot_seasonality_quarterly(quarterly_data, title, ylabel):
             marker_color=['#10b981', '#3b82f6', '#f59e0b', '#ef4444']
         ))
     else:
-        # Es una Series
         fig.add_trace(go.Bar(
             x=quarters,
             y=quarterly_data.values,
@@ -879,10 +1151,9 @@ def plot_seasonality_quarterly(quarterly_data, title, ylabel):
     return fig
 
 def plot_seasonality_yearly(yearly_data, title, ylabel):
-    """Gráfico de evolución anual - CORREGIDO"""
+    """Gráfico de evolución anual"""
     fig = go.Figure()
     
-    # Verificar si es DataFrame o Series
     if isinstance(yearly_data, pd.DataFrame) and 'mean' in yearly_data.columns:
         fig.add_trace(go.Scatter(
             x=yearly_data.index,
@@ -905,7 +1176,6 @@ def plot_seasonality_yearly(yearly_data, title, ylabel):
                 hoverinfo='skip'
             ))
     else:
-        # Es una Series
         fig.add_trace(go.Bar(
             x=yearly_data.index,
             y=yearly_data.values,
@@ -922,13 +1192,172 @@ def plot_seasonality_yearly(yearly_data, title, ylabel):
     
     return fig
 
+def plot_cross_correlation(cross_corr_df, asset1_name, asset2_name):
+    """Gráfico de cross-correlation"""
+    fig = go.Figure()
+    
+    colors = ['#ef4444' if lag < 0 else '#10b981' if lag > 0 else '#3b82f6' 
+              for lag in cross_corr_df['lag']]
+    
+    fig.add_trace(go.Bar(
+        x=cross_corr_df['lag'],
+        y=cross_corr_df['correlation'],
+        marker_color=colors,
+        hovertemplate='Lag: %{x}<br>Correlación: %{y:.4f}<extra></extra>'
+    ))
+    
+    # Marcar lag óptimo
+    idx_max = cross_corr_df['correlation'].abs().idxmax()
+    optimal_lag = cross_corr_df.loc[idx_max, 'lag']
+    max_corr = cross_corr_df.loc[idx_max, 'correlation']
+    
+    fig.add_vline(x=optimal_lag, line_dash="dash", line_color="#f59e0b", 
+                  annotation_text=f"Óptimo: {optimal_lag}d", annotation_position="top")
+    
+    fig.update_layout(
+        title=f'Cross-Correlation: {asset1_name} vs {asset2_name}',
+        xaxis_title=f'Lag (días) - Positivo: {asset1_name} lidera | Negativo: {asset2_name} lidera',
+        yaxis_title='Correlación',
+        template='plotly_dark',
+        height=400,
+        showlegend=False
+    )
+    
+    return fig
+
+def plot_rolling_lead_lag(rolling_ll_df, asset1_name, asset2_name):
+    """Gráfico de lead-lag rolling"""
+    fig = make_subplots(
+        rows=2, cols=1,
+        subplot_titles=('Lag Óptimo Rolling', 'Correlación Máxima'),
+        vertical_spacing=0.15
+    )
+    
+    # Lag óptimo
+    colors = ['#ef4444' if lag < 0 else '#10b981' if lag > 0 else '#3b82f6' 
+              for lag in rolling_ll_df['optimal_lag']]
+    
+    fig.add_trace(go.Scatter(
+        x=rolling_ll_df['date'],
+        y=rolling_ll_df['optimal_lag'],
+        mode='lines',
+        name='Lag Óptimo',
+        line=dict(color='#3b82f6', width=1.5)
+    ), row=1, col=1)
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="#666666", row=1, col=1)
+    
+    # Correlación máxima
+    fig.add_trace(go.Scatter(
+        x=rolling_ll_df['date'],
+        y=rolling_ll_df['max_correlation'],
+        mode='lines',
+        name='Correlación Máx',
+        line=dict(color='#10b981', width=1.5)
+    ), row=2, col=1)
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="#666666", row=2, col=1)
+    
+    fig.update_layout(
+        title=f'Lead-Lag Rolling: {asset1_name} vs {asset2_name}',
+        height=500,
+        template='plotly_dark',
+        showlegend=False
+    )
+    
+    fig.update_yaxes(title_text="Lag (días)", row=1, col=1)
+    fig.update_yaxes(title_text="Correlación", row=2, col=1)
+    
+    return fig
+
+def plot_granger_causality(granger_results, asset1_name, asset2_name):
+    """Gráfico de Granger causality p-values"""
+    if granger_results is None:
+        return None
+    
+    lags = list(granger_results['asset1_causes_asset2'].keys())
+    pvals_1_to_2 = list(granger_results['asset1_causes_asset2'].values())
+    pvals_2_to_1 = list(granger_results['asset2_causes_asset1'].values())
+    
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=lags,
+        y=pvals_1_to_2,
+        mode='lines+markers',
+        name=f'{asset1_name} → {asset2_name}',
+        line=dict(color='#10b981', width=2),
+        marker=dict(size=8)
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=lags,
+        y=pvals_2_to_1,
+        mode='lines+markers',
+        name=f'{asset2_name} → {asset1_name}',
+        line=dict(color='#3b82f6', width=2),
+        marker=dict(size=8)
+    ))
+    
+    fig.add_hline(y=0.05, line_dash="dash", line_color="#ef4444", 
+                  annotation_text="p=0.05", annotation_position="right")
+    fig.add_hline(y=0.01, line_dash="dot", line_color="#f59e0b", 
+                  annotation_text="p=0.01", annotation_position="right")
+    
+    fig.update_layout(
+        title='Test de Causalidad de Granger (p-values)',
+        xaxis_title='Lag (días)',
+        yaxis_title='p-value',
+        yaxis=dict(type='log'),
+        template='plotly_dark',
+        height=400,
+        legend=dict(x=0.7, y=0.95)
+    )
+    
+    return fig
+
+def plot_impulse_response(ir_results, asset1_name, asset2_name):
+    """Gráfico de impulse response"""
+    fig = go.Figure()
+    
+    fig.add_trace(go.Scatter(
+        x=ir_results['periods'],
+        y=ir_results['asset1_shock_to_asset2'],
+        mode='lines+markers',
+        name=f'Shock {asset1_name} → {asset2_name}',
+        line=dict(color='#10b981', width=2),
+        marker=dict(size=6)
+    ))
+    
+    fig.add_trace(go.Scatter(
+        x=ir_results['periods'],
+        y=ir_results['asset2_shock_to_asset1'],
+        mode='lines+markers',
+        name=f'Shock {asset2_name} → {asset1_name}',
+        line=dict(color='#3b82f6', width=2),
+        marker=dict(size=6)
+    ))
+    
+    fig.add_hline(y=0, line_dash="dash", line_color="#666666")
+    
+    fig.update_layout(
+        title=f'Impulse Response (Shocks > 2σ)',
+        xaxis_title='Períodos después del shock',
+        yaxis_title='Respuesta normalizada',
+        template='plotly_dark',
+        height=400,
+        legend=dict(x=0.6, y=0.95)
+    )
+    
+    return fig
+
 # ============================================================================
 # INTERFAZ PRINCIPAL
 # ============================================================================
 
 st.title("📊 Pairs Trading - Correlation Analysis")
-st.markdown("**Análisis de correlaciones y estacionalidad para pares de activos**")
-st.info("📊 **10 años de historia** | 🔍 **Análisis de estacionalidad** | 📈 **Patrones históricos**")
+st.markdown("**Análisis de correlaciones, estacionalidad y Lead-Lag para pares de activos**")
+st.info(f"📊 **10 años de historia** | 🔍 **Ventana fija: {ROLLING_WINDOW} días** | 📈 **Análisis Lead-Lag**")
 
 # ============================================================================
 # SIDEBAR - GESTIÓN DE DATOS
@@ -1011,9 +1440,9 @@ if 'all_asset_data' not in st.session_state:
     
     **Características:**
     - 📅 **10 años de datos históricos** (2015-2025)
-    - 📊 **Análisis de estacionalidad** completo
-    - 📈 **Patrones históricos** por períodos relevantes
-    - 🎯 **Análisis estadístico avanzado**
+    - 📊 **Ventana fija de {ROLLING_WINDOW} días**
+    - 📈 **Análisis Lead-Lag** completo
+    - 🎯 **Test de Granger Causality**
     
     **Para comenzar:**
     1. Presiona "📥 Descargar Datos (10 años)"
@@ -1021,7 +1450,7 @@ if 'all_asset_data' not in st.session_state:
     st.stop()
 
 # ============================================================================
-# PARÁMETROS
+# PARÁMETROS (SIMPLIFICADOS)
 # ============================================================================
 
 st.sidebar.markdown("---")
@@ -1029,8 +1458,8 @@ st.sidebar.header("⚙️ Parámetros de Análisis")
 
 min_correlation = st.sidebar.slider("Correlación Mínima", 0.3, 0.9, 0.5, 0.05)
 max_cv = st.sidebar.slider("Máx. CV (estabilidad)", 0.2, 0.8, 0.4, 0.05)
-rolling_window = st.sidebar.slider("Window Rolling Correlation", 10, 200, 30, 5)
-lookback_analysis = st.sidebar.slider("Lookback para Análisis", 50, 200, 100, 10)
+
+st.sidebar.info(f"📊 Ventana fija: **{ROLLING_WINDOW} días**")
 
 # Crear DataFrame
 df_all_prices = merge_asset_data(st.session_state.all_asset_data)
@@ -1048,11 +1477,12 @@ st.info(f"📊 {len(df_all_prices.columns)} activos disponibles | 💱 DXY inclu
 # TABS
 # ============================================================================
 
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🔍 Búsqueda de Pares",
     "📊 Análisis Individual",
     "📈 Comparación de Pares",
-    "📅 Estacionalidad"
+    "📅 Estacionalidad",
+    "⏱️ Lead-Lag"
 ])
 
 # ============================================================================
@@ -1078,7 +1508,7 @@ with tab1:
                 correlation_type='positive',
                 min_correlation=min_correlation,
                 max_cv=max_cv,
-                lookback=lookback_analysis
+                lookback=LOOKBACK_ANALYSIS
             )
         
         st.markdown("### 📉 Correlación NEGATIVA...")
@@ -1088,7 +1518,7 @@ with tab1:
                 correlation_type='negative',
                 min_correlation=min_correlation,
                 max_cv=max_cv,
-                lookback=lookback_analysis
+                lookback=LOOKBACK_ANALYSIS
             )
         
         st.session_state.positive_pairs = positive_pairs
@@ -1151,7 +1581,7 @@ with tab1:
                     st.session_state.selected_asset2 = selected_row['asset2']
                     st.session_state.run_analysis = True
                     st.success(f"✅ {selected_pos_pair}")
-                    st.info("👉 Ve a 'Análisis Individual' o 'Estacionalidad'")
+                    st.info("👉 Ve a 'Análisis Individual', 'Estacionalidad' o 'Lead-Lag'")
             else:
                 st.warning("No se encontraron pares")
         
@@ -1207,7 +1637,7 @@ with tab1:
                     st.session_state.selected_asset2 = selected_row['asset2']
                     st.session_state.run_analysis = True
                     st.success(f"✅ {selected_neg_pair}")
-                    st.info("👉 Ve a 'Análisis Individual' o 'Estacionalidad'")
+                    st.info("👉 Ve a 'Análisis Individual', 'Estacionalidad' o 'Lead-Lag'")
             else:
                 st.warning("No se encontraron pares")
 
@@ -1264,8 +1694,8 @@ with tab2:
         col3.metric("Años", f"{years_data:.1f}")
         
         # Rolling Correlation
-        st.markdown("### 📈 Rolling Correlation")
-        corr_df = calculate_rolling_correlation(df_all_prices, asset1, asset2, window=rolling_window, step=1)
+        st.markdown(f"### 📈 Rolling Correlation ({ROLLING_WINDOW}d)")
+        corr_df = calculate_rolling_correlation(df_all_prices, asset1, asset2, window=ROLLING_WINDOW, step=1)
         st.plotly_chart(
             plot_rolling_correlation(corr_df, ASSETS[asset1]['label'], ASSETS[asset2]['label']),
             use_container_width=True
@@ -1382,7 +1812,7 @@ with tab3:
             top_pos = st.session_state.positive_pairs.head(10).to_dict('records')
             
             with st.spinner("Generando gráficos..."):
-                fig_pos = plot_multiple_rolling_correlations(df_all_prices, top_pos, window=rolling_window)
+                fig_pos = plot_multiple_rolling_correlations(df_all_prices, top_pos, window=ROLLING_WINDOW)
                 st.plotly_chart(fig_pos, use_container_width=True)
         else:
             st.info("No hay pares")
@@ -1395,7 +1825,7 @@ with tab3:
             top_neg = st.session_state.negative_pairs.head(10).to_dict('records')
             
             with st.spinner("Generando gráficos..."):
-                fig_neg = plot_multiple_rolling_correlations(df_all_prices, top_neg, window=rolling_window)
+                fig_neg = plot_multiple_rolling_correlations(df_all_prices, top_neg, window=ROLLING_WINDOW)
                 st.plotly_chart(fig_neg, use_container_width=True)
         else:
             st.info("No hay pares")
@@ -1511,7 +1941,7 @@ with tab4:
     if st.button("🔄 Analizar Estacionalidad", type="primary"):
         
         with st.spinner("Analizando..."):
-            seasonality = analyze_seasonality(df_all_prices, season_asset1, season_asset2, lookback_analysis)
+            seasonality = analyze_seasonality(df_all_prices, season_asset1, season_asset2, LOOKBACK_ANALYSIS)
         
         st.success("✅ Completado")
         
@@ -1684,17 +2114,305 @@ with tab4:
     else:
         st.info("👆 Selecciona activos y presiona **Analizar Estacionalidad**")
 
+# ============================================================================
+# TAB 5: LEAD-LAG
+# ============================================================================
+
+with tab5:
+    st.header("⏱️ Análisis Lead-Lag")
+    st.info("""
+    **Análisis de relaciones temporales entre activos:**
+    - 📊 **Cross-Correlation**: Correlación con diferentes lags
+    - 📈 **Rolling Lead-Lag**: Evolución temporal del lag óptimo
+    - 🔬 **Granger Causality**: Test estadístico de causalidad
+    - 💥 **Impulse Response**: Respuesta a shocks
+    """)
+    
+    # Sub-tabs para Lead-Lag
+    ll_tab1, ll_tab2 = st.tabs(["📊 Análisis Individual", "🔍 Búsqueda de Pares Lead-Lag"])
+    
+    with ll_tab1:
+        st.markdown("### 📊 Análisis Lead-Lag Individual")
+        
+        available_assets = list(st.session_state.all_asset_data.keys())
+        
+        default_ll_asset1 = st.session_state.get('selected_asset1', available_assets[0])
+        default_ll_asset2 = st.session_state.get('selected_asset2', available_assets[1] if len(available_assets) > 1 else available_assets[0])
+        
+        if default_ll_asset2 == default_ll_asset1 and len(available_assets) > 1:
+            default_ll_asset2 = available_assets[1]
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            ll_asset1 = st.selectbox(
+                "Activo 1",
+                options=available_assets,
+                index=available_assets.index(default_ll_asset1) if default_ll_asset1 in available_assets else 0,
+                format_func=lambda x: ASSETS[x]['label'],
+                key='ll_asset1'
+            )
+        
+        with col2:
+            ll_asset2_options = [a for a in available_assets if a != ll_asset1]
+            ll_asset2 = st.selectbox(
+                "Activo 2",
+                options=ll_asset2_options,
+                index=ll_asset2_options.index(default_ll_asset2) if default_ll_asset2 in ll_asset2_options else 0,
+                format_func=lambda x: ASSETS[x]['label'],
+                key='ll_asset2'
+            )
+        
+        with col3:
+            max_lag = st.number_input("Max Lag (días)", min_value=5, max_value=30, value=15, key='ll_max_lag')
+        
+        if st.button("🔄 Analizar Lead-Lag", type="primary", key='btn_ll_analyze'):
+            
+            with st.spinner("Calculando..."):
+                prices1 = df_all_prices[ll_asset1].dropna()
+                prices2 = df_all_prices[ll_asset2].dropna()
+                
+                common_idx = prices1.index.intersection(prices2.index)
+                p1 = prices1.loc[common_idx]
+                p2 = prices2.loc[common_idx]
+                
+                returns1 = np.log(p1 / p1.shift(1)).dropna()
+                returns2 = np.log(p2 / p2.shift(1)).dropna()
+                
+                common_ret_idx = returns1.index.intersection(returns2.index)
+                returns1 = returns1.loc[common_ret_idx]
+                returns2 = returns2.loc[common_ret_idx]
+                
+                asset1_name = ASSETS[ll_asset1]['label']
+                asset2_name = ASSETS[ll_asset2]['label']
+            
+            st.success("✅ Análisis completado")
+            
+            # Cross-Correlation
+            st.markdown("### 📊 Cross-Correlation")
+            
+            cross_corr = calculate_cross_correlation(returns1, returns2, max_lag=max_lag)
+            
+            st.plotly_chart(
+                plot_cross_correlation(cross_corr, asset1_name, asset2_name),
+                use_container_width=True
+            )
+            
+            # Métricas de Cross-Correlation
+            idx_max = cross_corr['correlation'].abs().idxmax()
+            optimal_lag = cross_corr.loc[idx_max, 'lag']
+            max_corr = cross_corr.loc[idx_max, 'correlation']
+            contemp_corr = cross_corr[cross_corr['lag'] == 0]['correlation'].values[0]
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            col1.metric("Lag Óptimo", f"{optimal_lag} días")
+            col2.metric("Corr. Óptima", f"{max_corr:.4f}")
+            col3.metric("Corr. Contemporánea", f"{contemp_corr:.4f}")
+            col4.metric("Mejora", f"{abs(max_corr) - abs(contemp_corr):.4f}")
+            
+            # Interpretación
+            if optimal_lag > 0:
+                st.success(f"📈 **{asset1_name}** LIDERA a **{asset2_name}** por {optimal_lag} días")
+            elif optimal_lag < 0:
+                st.success(f"📈 **{asset2_name}** LIDERA a **{asset1_name}** por {-optimal_lag} días")
+            else:
+                st.info("📊 **Relación contemporánea** - No hay lead-lag significativo")
+            
+            st.markdown("---")
+            
+            # Rolling Lead-Lag
+            st.markdown("### 📈 Lead-Lag Rolling (60 días)")
+            
+            with st.spinner("Calculando rolling lead-lag..."):
+                rolling_ll = calculate_rolling_lead_lag(returns1, returns2, window=60, max_lag=10)
+            
+            st.plotly_chart(
+                plot_rolling_lead_lag(rolling_ll, asset1_name, asset2_name),
+                use_container_width=True
+            )
+            
+            # Estadísticas del rolling
+            col1, col2, col3, col4 = st.columns(4)
+            
+            mean_lag = rolling_ll['optimal_lag'].mean()
+            std_lag = rolling_ll['optimal_lag'].std()
+            pct_positive = (rolling_ll['optimal_lag'] > 0).mean() * 100
+            pct_negative = (rolling_ll['optimal_lag'] < 0).mean() * 100
+            
+            col1.metric("Lag Medio", f"{mean_lag:.2f} días")
+            col2.metric("Std Lag", f"{std_lag:.2f}")
+            col3.metric(f"% {asset1_name[:10]} lidera", f"{pct_positive:.1f}%")
+            col4.metric(f"% {asset2_name[:10]} lidera", f"{pct_negative:.1f}%")
+            
+            st.markdown("---")
+            
+            # Granger Causality
+            st.markdown("### 🔬 Test de Causalidad de Granger")
+            
+            with st.spinner("Ejecutando test de Granger..."):
+                granger_results = granger_causality_test(returns1, returns2, max_lag=5)
+            
+            if granger_results:
+                fig_granger = plot_granger_causality(granger_results, asset1_name, asset2_name)
+                if fig_granger:
+                    st.plotly_chart(fig_granger, use_container_width=True)
+                
+                # Interpretación Granger
+                best_pval_1_to_2 = min(granger_results['asset1_causes_asset2'].values())
+                best_pval_2_to_1 = min(granger_results['asset2_causes_asset1'].values())
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if best_pval_1_to_2 < 0.05:
+                        st.success(f"✅ **{asset1_name}** Granger-causa a **{asset2_name}** (p={best_pval_1_to_2:.4f})")
+                    else:
+                        st.warning(f"❌ **{asset1_name}** NO Granger-causa a **{asset2_name}** (p={best_pval_1_to_2:.4f})")
+                
+                with col2:
+                    if best_pval_2_to_1 < 0.05:
+                        st.success(f"✅ **{asset2_name}** Granger-causa a **{asset1_name}** (p={best_pval_2_to_1:.4f})")
+                    else:
+                        st.warning(f"❌ **{asset2_name}** NO Granger-causa a **{asset1_name}** (p={best_pval_2_to_1:.4f})")
+                
+                # Tabla de p-values
+                granger_df = pd.DataFrame({
+                    'Lag': list(granger_results['asset1_causes_asset2'].keys()),
+                    f'{asset1_name[:15]} → {asset2_name[:15]}': list(granger_results['asset1_causes_asset2'].values()),
+                    f'{asset2_name[:15]} → {asset1_name[:15]}': list(granger_results['asset2_causes_asset1'].values())
+                })
+                
+                st.dataframe(
+                    granger_df.style.format({
+                        f'{asset1_name[:15]} → {asset2_name[:15]}': '{:.4f}',
+                        f'{asset2_name[:15]} → {asset1_name[:15]}': '{:.4f}'
+                    }),
+                    width='stretch'
+                )
+            else:
+                st.warning("No se pudo ejecutar el test de Granger (datos insuficientes)")
+            
+            st.markdown("---")
+            
+            # Impulse Response
+            st.markdown("### 💥 Impulse Response")
+            
+            with st.spinner("Calculando impulse response..."):
+                ir_results = calculate_impulse_response(returns1, returns2, periods=20)
+            
+            st.plotly_chart(
+                plot_impulse_response(ir_results, asset1_name, asset2_name),
+                use_container_width=True
+            )
+            
+            col1, col2 = st.columns(2)
+            col1.metric(f"Shocks en {asset1_name[:15]}", ir_results['n_shocks_asset1'])
+            col2.metric(f"Shocks en {asset2_name[:15]}", ir_results['n_shocks_asset2'])
+        
+        else:
+            st.info("👆 Selecciona activos y presiona **Analizar Lead-Lag**")
+    
+    with ll_tab2:
+        st.markdown("### 🔍 Búsqueda de Pares con Lead-Lag Significativo")
+        
+        st.info("""
+        **Criterios de búsqueda:**
+        - Mejora de correlación con lag vs contemporánea
+        - Significancia en test de Granger
+        - Lead-lag consistente (no contemporáneo)
+        """)
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            ll_min_corr = st.slider("Correlación Mínima", 0.2, 0.8, 0.3, 0.05, key='ll_search_min_corr')
+        
+        with col2:
+            ll_search_max_lag = st.number_input("Max Lag Búsqueda", min_value=5, max_value=20, value=10, key='ll_search_max_lag')
+        
+        if st.button("🚀 Buscar Pares Lead-Lag", type="primary", key='btn_ll_search'):
+            
+            with st.spinner("Buscando pares con lead-lag significativo..."):
+                lead_lag_pairs = find_lead_lag_pairs(
+                    df_all_prices,
+                    min_correlation=ll_min_corr,
+                    max_lag=ll_search_max_lag
+                )
+            
+            st.session_state.lead_lag_pairs = lead_lag_pairs
+            st.success(f"✅ Encontrados {len(lead_lag_pairs)} pares con lead-lag")
+        
+        if 'lead_lag_pairs' in st.session_state and len(st.session_state.lead_lag_pairs) > 0:
+            
+            display_ll = st.session_state.lead_lag_pairs.head(30).copy()
+            
+            display_ll['Activo 1'] = display_ll['asset1'].apply(lambda x: ASSETS[x]['label'])
+            display_ll['Activo 2'] = display_ll['asset2'].apply(lambda x: ASSETS[x]['label'])
+            display_ll['Líder'] = display_ll['leader'].apply(lambda x: ASSETS[x]['label'] if x else '-')
+            display_ll['✓ Granger 1→2'] = display_ll['granger_significant_1_to_2'].apply(lambda x: '✅' if x else '❌')
+            display_ll['✓ Granger 2→1'] = display_ll['granger_significant_2_to_1'].apply(lambda x: '✅' if x else '❌')
+            
+            table_ll = display_ll[[
+                'Activo 1', 'Activo 2', 'Líder', 'lead_days', 'score',
+                'max_correlation', 'contemp_correlation', 'correlation_improvement',
+                '✓ Granger 1→2', '✓ Granger 2→1', 'years_data'
+            ]].rename(columns={
+                'lead_days': 'Lead (días)',
+                'score': 'Score',
+                'max_correlation': 'Corr Óptima',
+                'contemp_correlation': 'Corr Contemp',
+                'correlation_improvement': 'Mejora',
+                'years_data': 'Años'
+            })
+            
+            st.dataframe(
+                table_ll.style.format({
+                    'Lead (días)': '{:.0f}',
+                    'Score': '{:.1f}',
+                    'Corr Óptima': '{:.3f}',
+                    'Corr Contemp': '{:.3f}',
+                    'Mejora': '{:.3f}',
+                    'Años': '{:.1f}'
+                }),
+                width='stretch',
+                height=600
+            )
+            
+            st.metric("Total pares encontrados", len(st.session_state.lead_lag_pairs))
+            
+            # Seleccionar para análisis
+            pair_options_ll = [f"{row['Activo 1']} / {row['Activo 2']}" 
+                              for _, row in display_ll.iterrows()]
+            
+            selected_ll_pair = st.selectbox(
+                "Seleccionar para análisis detallado",
+                options=pair_options_ll,
+                key='select_ll_pair'
+            )
+            
+            if st.button("📊 Analizar Detalle", key='btn_analyze_ll_detail'):
+                idx = pair_options_ll.index(selected_ll_pair)
+                selected_row = display_ll.iloc[idx]
+                st.session_state.selected_asset1 = selected_row['asset1']
+                st.session_state.selected_asset2 = selected_row['asset2']
+                st.success(f"✅ {selected_ll_pair} - Ve al tab 'Análisis Individual' arriba")
+        
+        elif 'lead_lag_pairs' in st.session_state:
+            st.warning("No se encontraron pares con lead-lag significativo")
+
 # Footer
 st.sidebar.markdown("---")
 st.sidebar.markdown("### 📚 Guía")
-st.sidebar.markdown("""
+st.sidebar.markdown(f"""
 **Flujo:**
 1. 🔍 Búsqueda de pares
 2. 📊 Análisis individual
 3. 📈 Comparación múltiple
 4. 📅 Estacionalidad
+5. ⏱️ **Lead-Lag** (NUEVO)
 
-**10 años de datos**
+**Ventana fija: {ROLLING_WINDOW} días**
 **DXY incluido**
 """)
 
